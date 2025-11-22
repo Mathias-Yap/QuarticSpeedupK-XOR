@@ -1,0 +1,4 @@
+[core]
+    remote = quantumkxordata
+['remote "quantumkxordata"']
+    url = s3://quantum-kxor-project/problemset/
