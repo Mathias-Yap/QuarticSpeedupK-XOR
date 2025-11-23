@@ -1,4 +1,5 @@
 [core]
     remote = quantumkxordata
+    autostage = true
 ['remote "quantumkxordata"']
     url = s3://quantum-kxor-project/problemset/
