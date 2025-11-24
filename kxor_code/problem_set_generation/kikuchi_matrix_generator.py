@@ -1,42 +1,17 @@
 from itertools import combinations
 
 from .kxor_instance import KXORInstance
-from .kxor_instance_generator import PlantedNoisyKXORGenerator
+from .planted_noisy_kxor_generator import PlantedNoisyKXORGenerator
 import numpy as np
 from scipy.sparse import csr_matrix, dok_matrix
 from scipy.sparse.linalg import eigsh
 from scipy.linalg import eigh
 import pandas as pd
 
-problems = pd.read_csv('/home/mathiasyap/Code/university/quantumkxor/QuarticSpeedupK-XOR/data/problem_instances/kxor_grid_dataset.csv')
-problems.head()
-instances = []
-for instance_id in problems['instance_id'].unique():
-    instance_data = problems[problems['instance_id'] == instance_id]
-    kw_dict = {
-    "n" : int(instance_data['n'].iloc[0]),
-    "m" : int(instance_data['m'].iloc[0]),
-    "k" : int(instance_data['k'].iloc[0]),
-    "is_planted": instance_data['instance_type'].iloc[0] == "planted",
-    "rho": float(instance_data['rho'].iloc[0]) if instance_data['instance_type'].iloc[0] == "planted" else None
-    }
-    scopes = np.ndarray()
-    for clause_id in range(1, kw_dict['m'] + 1):
-        
-    scopes = instance_data[['var1', 'var2', 'var3', 'var4']].values.tolist()
-    b = instance_data['b'].tolist()
-    instance = KXORInstance(n=n, m=m, k=k, scopes=scopes, b=b)
-    instances.append(instance)
-
-def load_problem_instances_from_file(file_path: str) -> KXORInstance:
-    """Load a K-XOR problem instance from a file.
+class ClassicalKikuchiSolver:
     """
-    with open(file_path, 'r') as f:
-        problems_df = pd.read_csv(f)
-    
-    
-     
-    return KXORInstance(n=n, m=m, k=k, scopes=scopes, b=b)
+    Class for generating and analyzing the Kikuchi matrix of K-XOR problem instances.
+    """
 def compute_matchings(problem_instance: KXORInstance, ell, int):
     combs = combinations(range(problem_instance.n), ell)
     # for clause, result in problem_instance.scopes, problem_instance.b:
@@ -64,7 +39,7 @@ def two_xor_matrix(problem_instance: KXORInstance):
     return csr_matrix(incidence)
 
 
-def kikuchi_matrix_sets(problem_instance: KXORInstance, ell: int) -> dok_matrix:
+def compute_kikuchi_matrix(problem_instance: KXORInstance, ell: int) -> dok_matrix:
     if problem_instance.k < 2:
         raise ValueError("Kikuchi matrix is only defined for k >= 2.")
     if ell < problem_instance.k / 2:

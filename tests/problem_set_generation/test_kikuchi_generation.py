@@ -1,28 +1,38 @@
 import numpy as np
-import kxor_code
-from kxor_code.problem_set_generation.kikuchi_matrix_generator import two_xor_matrix
+from kxor_code.problem_set_generation.kikuchi_matrix_generator import two_xor_matrix, compute_kikuchi_matrix
 from kxor_code.problem_set_generation.kxor_instance import KXORInstance
-from kxor_code.problem_set_generation.kxor_instance_generator import PlantedNoisyKXORGenerator
+from kxor_code.problem_set_generation.planted_noisy_kxor_generator import PlantedNoisyKXORGenerator
+from math import comb
 import pytest
 
-test_instance_generator = PlantedNoisyKXORGenerator(n=3,k=2,seed = 42)
-test_instance = test_instance_generator.sample_random(m=3)
-test_instance.scopes = np.ndarray(shape=(3,), dtype=object)
-test_instance.scopes[0] = [1, 0]
-test_instance.scopes[1] = [1, 2]
-test_instance.scopes[2] = [0, 2]
-test_instance.b = np.array([1, 0, 1], dtype=int)
-adj_matrix = two_xor_matrix(test_instance)
-adj_matrix.todense()
 
 def test_compute_kikuchi_matrix():
-    pass
+    rng = np.random.default_rng(42)
+    test_instance_generator = PlantedNoisyKXORGenerator(n=10,k=3,rng = rng)
+    test_instance = test_instance_generator.sample_random(m=15)
+    kikuchimatrix = compute_kikuchi_matrix(test_instance, ell=2)
+
+    # assert its shape is correct
+    assert kikuchimatrix.shape is not None 
+    assert kikuchimatrix.shape[0] == kikuchimatrix.shape[1]
+    assert(kikuchimatrix.shape[0] == comb(test_instance.n, 2))
+
+    # assert it's symmetric
+    assert (kikuchimatrix != kikuchimatrix.T).nnz == 0  # Kikuchi matrix must be symmetric
+
+
 
 def test_two_xor_matrix():
+    rng = np.random.default_rng(42)
+    test_instance_generator = PlantedNoisyKXORGenerator(n=10,k=3,rng = rng)
+    test_instance = test_instance_generator.sample_random(m=15)
     adj_matrix = two_xor_matrix(test_instance)
     assert adj_matrix.shape == (test_instance.m, test_instance.n)
     
 def test_adjacency_matrix_contents():
+    rng = np.random.default_rng(42)
+    test_instance_generator = PlantedNoisyKXORGenerator(n=10,k=3,rng = rng)
+    test_instance = test_instance_generator.sample_random(m=15)
     adj_matrix = two_xor_matrix(test_instance)
     for i, scope in enumerate(test_instance.scopes):
         for j in range(test_instance.n):
@@ -32,5 +42,8 @@ def test_adjacency_matrix_contents():
                 assert adj_matrix[i, j] == 0
                 
 def test_adjacency_matrix_symmetry():
+    rng = np.random.default_rng(42)
+    test_instance_generator = PlantedNoisyKXORGenerator(n=10,k=3,rng = rng)
+    test_instance = test_instance_generator.sample_random(m=15)
     adj_matrix = two_xor_matrix(test_instance)
     assert (adj_matrix != adj_matrix.T).nnz == 0  # Adjacency matrix must be symmetric

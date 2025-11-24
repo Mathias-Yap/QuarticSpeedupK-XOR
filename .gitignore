@@ -1,3 +1,3 @@
-/data
 **/__pycache__/
 /datatest.txt
+/data/problem_instances/*.npz

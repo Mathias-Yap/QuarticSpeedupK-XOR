@@ -32,7 +32,7 @@ class KXORInstance:
             is_planted=self.is_planted,
             rho=-1.0 if self.rho is None else self.rho,
             has_rho=self.rho is not None,
-            z=self.z if self.z is not None else np.array([], dtype=np.int8),
+            z=self.z if self.z is not None else np.array([]),
             has_z=self.z is not None,
         )
     @classmethod
@@ -46,7 +46,7 @@ class KXORInstance:
     ) -> "KXORInstance":
 
         scopes = np.ascontiguousarray(scopes)
-        b = np.ascontiguousarray(b, dtype=np.int8)
+        b = np.ascontiguousarray(b)
 
         m, k = scopes.shape
         n = int(scopes.max()) + 1 if scopes.size > 0 else 0
