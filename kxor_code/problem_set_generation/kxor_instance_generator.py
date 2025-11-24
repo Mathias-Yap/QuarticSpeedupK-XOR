@@ -1,35 +1,18 @@
-from __future__ import annotations
+
 
 from dataclasses import dataclass
 from typing import Optional, Callable, Dict, Any
 import numpy as np
 
+from kxor_code.problem_set_generation.kxor_instance import KXORInstance
 
-@dataclass
-class KXORInstance:
-    """
-    A k-XOR instance.
-
-    Variables: x_1,...,x_n in {±1}
-    Constraints: (S_i, b_i) with |S_i| = k, b_i in {±1}
-    """
-    n: int                 # number of variables
-    k: int                 # clause size
-    m: int                 # number of constraints
-    is_planted: bool       # True if drawn from planted distribution
-    scopes: np.ndarray
-    # shape (m, k), each row is a subset S_i ⊆ {0,...,n-1}
-    b: np.ndarray
-    # shape (m,), entries in {+1, -1}
-    rho: Optional[float] = None   # planted advantage ρ (None for random instances)
-    z: np.ndarray|None = None  # secret assignment z ∈ {±1}^n if planted, else None
 
 class PlantedNoisyKXORGenerator:
     """
     Generator for the distributions R_{n,k}(m) and P^z_{n,k}(m, ρ).
     """
 
-    def __init__(self, n: int, k: int, rng: Optional[np.random.Generator] = None, seed: Optional[int] = None):
+    def __init__(self, n: int, k: int, rng: Optional[np.random.Generator] = None):
         assert k >= 2 and k <= n
         self.n = n
         self.k = k

@@ -1,13 +1,42 @@
 from itertools import combinations
 
-from .k_xor_instance import KXORInstance, PlantedNoisyKXORGenerator
+from .kxor_instance import KXORInstance
+from .kxor_instance_generator import PlantedNoisyKXORGenerator
 import numpy as np
 from scipy.sparse import csr_matrix, dok_matrix
 from scipy.sparse.linalg import eigsh
+from scipy.linalg import eigh
+import pandas as pd
 
-def compute_kikuchi_matrix(problem_instance: KXORInstance, ell: int): 
-    pass 
+problems = pd.read_csv('/home/mathiasyap/Code/university/quantumkxor/QuarticSpeedupK-XOR/data/problem_instances/kxor_grid_dataset.csv')
+problems.head()
+instances = []
+for instance_id in problems['instance_id'].unique():
+    instance_data = problems[problems['instance_id'] == instance_id]
+    kw_dict = {
+    "n" : int(instance_data['n'].iloc[0]),
+    "m" : int(instance_data['m'].iloc[0]),
+    "k" : int(instance_data['k'].iloc[0]),
+    "is_planted": instance_data['instance_type'].iloc[0] == "planted",
+    "rho": float(instance_data['rho'].iloc[0]) if instance_data['instance_type'].iloc[0] == "planted" else None
+    }
+    scopes = np.ndarray()
+    for clause_id in range(1, kw_dict['m'] + 1):
+        
+    scopes = instance_data[['var1', 'var2', 'var3', 'var4']].values.tolist()
+    b = instance_data['b'].tolist()
+    instance = KXORInstance(n=n, m=m, k=k, scopes=scopes, b=b)
+    instances.append(instance)
 
+def load_problem_instances_from_file(file_path: str) -> KXORInstance:
+    """Load a K-XOR problem instance from a file.
+    """
+    with open(file_path, 'r') as f:
+        problems_df = pd.read_csv(f)
+    
+    
+     
+    return KXORInstance(n=n, m=m, k=k, scopes=scopes, b=b)
 def compute_matchings(problem_instance: KXORInstance, ell, int):
     combs = combinations(range(problem_instance.n), ell)
     # for clause, result in problem_instance.scopes, problem_instance.b:
@@ -35,7 +64,7 @@ def two_xor_matrix(problem_instance: KXORInstance):
     return csr_matrix(incidence)
 
 
-def kikuchi_matrix_sets(problem_instance, ell: int):
+def kikuchi_matrix_sets(problem_instance: KXORInstance, ell: int) -> dok_matrix:
     if problem_instance.k < 2:
         raise ValueError("Kikuchi matrix is only defined for k >= 2.")
     if ell < problem_instance.k / 2:
@@ -61,44 +90,26 @@ def kikuchi_matrix_sets(problem_instance, ell: int):
                 incidence[i, j] = sign
                 incidence[j, i] = sign
 
-    return csr_matrix(incidence)
+    return incidence
 
-def kikuchi_matrix(problem_instance: KXORInstance, ell: int):
-    """
-    Compute the Kikuchi matrix for a given K-XOR problem instance and ell.
-    Parameters: 
-        problem_instance (KXORInstance): The K-XOR problem instance.
-        ell (int): The size of the subsets to consider.
+
+def find_eigenvalues_and_vectors(kikuchi_matrix: dok_matrix, num_eigenvalues: int = -1) -> tuple[np.ndarray, np.ndarray]:
+    """Compute the eigenvalues and eigenvectors of the Kikuchi matrix. Utilizes sparse matrix methods for efficiency.
+    ARPACK wrapper: https://github.com/opencollab/arpack-ng
+
+    Parameters:
+        kikuchi_matrix (dok_matrix): The Kikuchi matrix.
+        num_eigenvalues (int): The number of eigenvalues and eigenvectors to compute. If -1, compute all.
     Returns:
-        csr_matrix: The Kikuchi matrix in sparse (csr) format.
+        tuple[np.ndarray, np.ndarray]: A tuple containing the eigenvalues and eigenvectors.
     """
-    if problem_instance.k < 2: 
-        raise ValueError("Kikuchi matrix is only defined for k >= 2.")
-    if ell < problem_instance.k/2:
-        raise ValueError("ell must be at least k/2.")
-    
-    # Generate all subsets of size ell
-    subsets = list(combinations(range(problem_instance.n), ell))
-    subsets = [set(s) for s in subsets] 
-
-    # Initialize Kikuchi Graph incidence matrix
-    incidence = np.zeros((len(subsets), len(subsets)), dtype=int)
-    for subset_1 in range(len(subsets)):
-        for subset_2 in range(subset_1, len(subsets)):
-            sym_diff = set(subsets[subset_1]).symmetric_difference(set(subsets[subset_2]))
-            if len(sym_diff) == problem_instance.k:
-                clause = tuple(sorted(sym_diff))
-                for i, (clause_inst, sign) in enumerate(zip(problem_instance.scopes, problem_instance.b)):
-                    if tuple(sorted(clause_inst)) == clause:
-                        incidence[subset_1, subset_2] = sign
-                        incidence[subset_2, subset_1] = sign
-                        break
-    return csr_matrix(incidence) 
-
-def find_eigenvalues_and_vectors(kikuchi_matrix: csr_matrix, num_eigenvalues: int) -> tuple[np.ndarray, np.ndarray]:
+    if not kikuchi_matrix.shape:
+        raise ValueError("Kikuchi matrix is empty.")
+    if num_eigenvalues == -1:
+        num_eigenvalues = kikuchi_matrix.shape[0]
     eigenvalues, eigenvectors = eigsh(kikuchi_matrix, k=num_eigenvalues)
     return eigenvalues, eigenvectors
-        
+
 
 def find_matchings(clause: tuple, subsets: list, sign: int) -> list[tuple[int,int,int]]:
     """Given a clause and a list of subsets, find all pairs of subsets such that
@@ -106,11 +117,49 @@ def find_matchings(clause: tuple, subsets: list, sign: int) -> list[tuple[int,in
     matchings = []
     clause_set = set(clause)
     for i in range(len(subsets)):
-        for j in range(i+1, len(subsets)):
-            subset_i = set(subsets[i])
-            subset_j = set(subsets[j])
-            sym_diff = subset_i.symmetric_difference(subset_j)
-            if sym_diff == clause_set:
-                matchings.append((i, j, sign))
+        subset_i = set(subsets[i])
+        subset_j = subset_i.symmetric_difference(clause)
+        if len(subset_j)== len(subsets[0]):
+            matchings.append((subset_i, subset_j, sign))
     return matchings
+
+def average_degree(kikuchi_matrix: dok_matrix) -> float:
+    """Compute the average degree of the Kikuchi matrix.
+    Parameters:
+        kikuchi_matrix (dok_matrix): The Kikuchi matrix.
+    Returns:
+        float: The average degree.
+    """
+    degrees = kikuchi_matrix.getnnz(axis=1)
+    return np.mean(degrees)
+
+def power_iteration(kikuchi_matrix: dok_matrix, num_iterations: int = 1000):
+    """Compute the largest eigenvalue and corresponding eigenvector of the Kikuchi matrix using the power iteration method.
+    Parameters:
+        kikuchi_matrix (dok_matrix): The Kikuchi matrix.
+        num_iterations (int): The number of iterations to perform.
+    Returns:
+        tuple[float, np.ndarray]: A tuple containing the largest eigenvalue and corresponding eigenvector.
+    """
+    if not kikuchi_matrix.shape:
+        raise ValueError("Kikuchi matrix is empty.")
+    n = kikuchi_matrix.shape[0]
+    b_k = np.random.rand(n)
     
+    for _ in range(num_iterations):
+        b_k1 = kikuchi_matrix.dot(b_k)
+        b_k1_norm = np.linalg.norm(b_k1)
+        b_k = b_k1 / b_k1_norm
+    
+    return b_k
+
+def constraint_density(problem_instance: KXORInstance) -> float:
+    """Compute the constraint density of a K-XOR problem instance.
+    Parameters:
+        problem_instance (KXORInstance): The K-XOR problem instance.
+    Returns:
+        float: The constraint density (m/n).
+    """
+    return problem_instance.m / problem_instance.n
+
+        

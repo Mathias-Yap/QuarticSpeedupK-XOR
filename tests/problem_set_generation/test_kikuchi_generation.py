@@ -1,7 +1,8 @@
 import numpy as np
 import kxor_code
-from kxor_code.problem_set_generation.kikuchi_matrix_generator import compute_kikuchi_matrix, two_xor_matrix
-from kxor_code.problem_set_generation.k_xor_instance import KXORInstance, PlantedNoisyKXORGenerator
+from kxor_code.problem_set_generation.kikuchi_matrix_generator import two_xor_matrix
+from kxor_code.problem_set_generation.kxor_instance import KXORInstance
+from kxor_code.problem_set_generation.kxor_instance_generator import PlantedNoisyKXORGenerator
 import pytest
 
 test_instance_generator = PlantedNoisyKXORGenerator(n=3,k=2,seed = 42)
