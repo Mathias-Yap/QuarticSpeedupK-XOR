@@ -15,6 +15,8 @@ from abc import ABC, abstractmethod
 from dataclasses import dataclass, field, replace
 from typing import Any, Dict, Iterable, Iterator, List, MutableMapping, Optional, Sequence
 
+from kxor_code.problem_set_generation.kxor_instance import KXORInstance
+
 
 @dataclass(frozen=True)
 class StepConfig:
@@ -40,7 +42,7 @@ class StepStats:
     started_at: float = field(default_factory=time.perf_counter)
     completed_at: Optional[float] = None
     failed: bool = False
-    notes: Dict[str, Any] = field(default_factory=dict)
+    additional_data: dict = field(default_factory=dict)
 
     def finish(self) -> None:
         if self.completed_at is None:
@@ -51,7 +53,13 @@ class StepStats:
         if self.completed_at is None:
             return None
         return self.completed_at - self.started_at
+    
+    def add_data(self, key: str, value: Any) -> None:
+        """Add additional data to the step stats."""
+        self.additional_data[key] = value
 
+    
+    
     def as_dict(self) -> Dict[str, Any]:
         """Convenience helper for serialising stats."""
         return {
@@ -62,32 +70,31 @@ class StepStats:
             "completed_at": self.completed_at,
             "duration_seconds": self.duration_seconds,
             "failed": self.failed,
-            "notes": dict(self.notes),
+            "additional_data": self.additional_data,
         }
 
 
 @dataclass
 class StepContext:
-    """Context shared across all problems in a batch while a step runs."""
+    """Context of a problem run step."""
 
     rng: random.Random
+    """Random number generator for the step if applicable."""
     problem_id: str
+    """ID of the problem being processed."""
     logger: logging.Logger
-    scratch: Dict[str, Any] = field(default_factory=dict)
-
+    """Logger for the step."""
 
 @dataclass
 class ProblemRecord:
     """Wraps a single problem instance with metadata and provenance."""
 
     problem_id: str
-    instance: Any
+    instance: KXORInstance
     fields: Dict[str, Any] = field(default_factory=dict)
-    intermediates: Dict[str, Dict[str, Any]] = field(default_factory=dict)
     step_history: List[StepStats] = field(default_factory=list)
-    """StepStats instance containing data for each step that has run on this problem."""
+    """StepStats instance containing basic data for each step that has run on this problem."""
 
-    
     def has_field(self, key: str) -> bool:
         return key in self.fields
 
@@ -103,33 +110,11 @@ class ProblemRecord:
             raise KeyError(
                 f"Problem '{self.problem_id}' is missing required field(s): {missing}"
             )
-
-    def add_intermediate(self, step_name: str, key: str, value: Any) -> None:
-        self.intermediates.setdefault(step_name, {})[key] = value
-
-    # def problem_step(
-    #     self,
-    #     step_name: str,
-    #     *,
-    #     duration_seconds: float,
-    #     success: bool,
-    #     produced_fields: Optional[Sequence[str]] = None,
-    #     error: Optional[str] = None,
-    # ) -> None:
-    #     entry = {
-    #         "step": step_name,
-    #         "timestamp": time.time(),
-    #         "duration_seconds": duration_seconds,
-    #         "success": success,
-    #     }
-    #     if produced_fields:
-    #         entry["produced_fields"] = list(produced_fields)
-    #     if error is not None:
-    #         entry["error"] = error
-    #     self.step_history.append(entry)
-
+    
     def add_metadata(self, stats: StepStats) -> None:
+        """Add step stats metadata to the problem record."""
         self.step_history.append(stats)
+
 
 
 class BaseAlgorithmStep(ABC):
@@ -168,23 +153,25 @@ class BaseAlgorithmStep(ABC):
         stats = StepStats(step_name=self.name, version=self.config.version, problem_id=problem.problem_id)
         context = self._build_context(problem)
         self._logger.info(
-            "Starting step '%s' (version %s) on problem %s (fields=%d)",
+            "Starting step '%s' (version %s) on problem %s (fields=%s)",
             self.name,
             self.config.version,
             problem.problem_id,
+            problem.fields
         )
 
         stats.started_at = time.perf_counter()
         produced_fields: Optional[Dict[str, Any]] = None
         error_msg: Optional[str] = None
         try:
-            produced_fields = self._run(problem, context) or {}
-            for key, value in produced_fields.items():
+            produced_fields= self._run(problem, context, stats) or {} 
+            for key, value in produced_fields.items(): #type: ignore
                 problem.add_field(key, value)
+
         except Exception as exc:  
             stats.failed = True
             error_msg = str(exc)
-            problem.add_intermediate(self.name, "error", error_msg)
+            stats.add_data("error", error_msg)
             self._logger.exception(
                 "Step '%s' failed for problem '%s'", self.name, problem.problem_id
             )
@@ -194,22 +181,19 @@ class BaseAlgorithmStep(ABC):
         finally:
             duration = time.perf_counter() - stats.started_at
             stats.completed_at = time.perf_counter()
+            stats.duration_seconds
             # problem.step_history.append(stats)
 
         stats.finish()
         problem.add_metadata(stats)
         self._logger.info(
-            "Finished step '%s' in %.3fs (processed=%d, failed=%d, problem=%s)",
+            "Finished step '%s' in %.3fs (success: %s, problem=%s)",
             self.name,
             stats.duration_seconds or -1.0,
-            stats.failed,
+            not stats.failed,
             problem.problem_id,
         )
         return stats
-
-    def add_intermediate(self, problem: ProblemRecord, key: str, value: Any) -> None:
-        """Helper for subclasses to problem intermediate data on the problem."""
-        problem.add_intermediate(self.name, key, value)
 
     def ensure_problem_fields(self, problem: ProblemRecord, keys: Iterable[str]) -> None:
         problem.expect_fields(keys)
@@ -225,21 +209,20 @@ class BaseAlgorithmStep(ABC):
 
     @abstractmethod
     def _run(
-        self, problem: ProblemRecord, context: StepContext
-    ) -> Optional[Dict[str, Any]]:
-        """
-        Execute the step for a single problem.
-
-        Return a mapping of produced fields that should be attached to the
-        problem problem.  Subclasses may also call `add_intermediate` for richer
-        trace data.
+        self, problem: ProblemRecord, context: StepContext, stats: StepStats
+    ) -> Optional[Dict[str, Any]]: 
+        """ 
+        Execute the step for a single problem. Return a mapping of produced fields that should be attached to the
+        problem problem. For collecting data on step execution, use the provided StepStats instance's `add_data` method.
+        
+        return {"produced_field": value}
         """
 
 
 class NoOpStep(BaseAlgorithmStep):
     """Simple illustrative step that only problems the runtime."""
 
-    def _run(self, problem: ProblemRecord, context: StepContext) -> Optional[Dict[str, Any]]:
-        self.add_intermediate(problem, "noop", f"touched by {self.name}")
+    def _run(self, problem: ProblemRecord, context: StepContext, stats: StepStats) -> Optional[Dict[str, Any]]:
+        stats.add_data("message", "No operation performed.")
         context.logger.debug("NoOpStep touched problem %s", problem.problem_id)
         return {}
