@@ -51,15 +51,6 @@ def _find_kappa(error: float) -> float:
         return 1.0
     return k
 
-def get_kikuchi_parameters(problem_instance: KXORInstance, error: float):
-    """Compute the parameters needed for the Kikuchi matrix based on Alice's theorem.
-    Parameters:
-        problem_instance (KXORInstance): The K-XOR problem instance.
-        error (float): The error parameter.
-    Returns:
-        tuple[int, float]: A tuple containing ell and the eigenvalue threshold.
-    """
-    
 
 def check_alice_theorem(ell: int, n: int, k: int, kappa: float, eps: float, m: int, delta_lnk=None, n_factor=None):
     """
