@@ -10,7 +10,7 @@ class QuarticQuantumAlgorithm(BaseAlgorithmStep):
     """
     Creates an equal superposition over the values that satisfies a clause. 
         clause_qbits: list of qubit indices participating in XOR
-        value:        0 or 1
+        value:        1 or 0/-1 (works both ways)
         n:            total number of variables
     """
     @staticmethod
@@ -257,6 +257,7 @@ class QuarticQuantumAlgorithm(BaseAlgorithmStep):
             steps,
             r,
             n * ell / k,
-            grover_iterations
+            grover_iterations,
+            threshold
         )
         return {"quartic_quantum_circuit": circuit}
