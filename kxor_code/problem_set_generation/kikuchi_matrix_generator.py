@@ -80,7 +80,7 @@ def check_alice_theorem(ell: int, n: int, k: int, kappa: float, eps: float, m: i
     -------
     result : dict
         {
-            "basic_constraints_ok": bool,
+            "basic_constraints_ok": str,
             "n_asymptotic_ok": bool or None,
             "Delta": float,
             "C_kappa": float,
@@ -88,21 +88,23 @@ def check_alice_theorem(ell: int, n: int, k: int, kappa: float, eps: float, m: i
             "failure_probability_bound": float,
             "d": float or None,
             "all_ok": bool
+            
         }
     """
     # --- basic structural constraints ---
-    basic = True
+    failure = False
+    basic = []
     
-    if ell <= 0 or n <= 0 or k <= 0:
-        basic = False
+    if ell <= 0 or n <= 0 or k <= 0 or kappa < 0:
+        basic.append("false, m, n, k, kappa must be positive")
     if k % 2 != 0:
-        basic = False  # k must be even
-    if ell < k / 2:
-        basic = False  # ell ≥ k/2
-    if not (0 < kappa <= 1):
-        basic = False  # κ ≤ 1 and positive
+        basic.append("false, k must be even")
+    if not (ell >= k / 2):
+        basic.append("false, ell must be at least k/2")
+    if not (kappa <= 1):
+        basic.append("false, kappa must be at most 1")
     if not (0 < eps <= kappa / (2 + kappa)):
-        basic = False  # 0 < ε ≤ κ/(2+κ)
+        basic.append("false, eps must be in (0, kappa/(2+kappa)]")
     
     # --- n ≫ k*ell (heuristic check if requested) ---
     if n_factor is None:
@@ -130,6 +132,7 @@ def check_alice_theorem(ell: int, n: int, k: int, kappa: float, eps: float, m: i
     
     all_ok = basic and (delta_condition_ok) and (n_asymptotic_ok in (True, None))
     
+    failure = len(basic) > 0 or not delta_condition_ok or (n_asymptotic_ok is False) 
     return {
         "basic_constraints_ok": basic,
         "n_asymptotic_ok": n_asymptotic_ok,
@@ -141,6 +144,7 @@ def check_alice_theorem(ell: int, n: int, k: int, kappa: float, eps: float, m: i
         "failure_probability_bound": failure_prob_bound,
         "d": d,
         "all_ok": all_ok,
+        "failure": failure
     }
 
 def search_kappa_ell(m: int, n: int, k: int, eps: float, n_factor=None):
