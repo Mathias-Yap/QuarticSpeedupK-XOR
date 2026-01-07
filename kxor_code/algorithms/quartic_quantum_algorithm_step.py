@@ -1,8 +1,10 @@
+from typing import Optional
 import pennylane as qml
-from pennylane import numpy as np
+from pennylane import numpy as pnp
+import numpy as np
 import matplotlib.pyplot as plt
 
-from kxor_code.algorithms.base_alg_step import BaseAlgorithmStep
+from kxor_code.algorithms.base_alg_step import BaseAlgorithmStep, ProblemRecord, StepContext, StepStats
 
 class QuarticQuantumAlgorithm(BaseAlgorithmStep):
     requires_fields = ["ell", "kikuchi_matrix", "threshold"]
@@ -56,7 +58,7 @@ class QuarticQuantumAlgorithm(BaseAlgorithmStep):
             # Map clause_qubits to local indices in clause_wires[i]
             local_mapping = {q: idx for idx, q in enumerate(qubits)}
             clause_indices = [local_mapping[q] for q in qubits]
-            prepare_xor_quantum_state(clause_wires[i], clause_indices, rhs)
+            QuarticQuantumAlgorithm.prepare_xor_quantum_state(clause_wires[i], clause_indices, rhs)
 
         # Prepare ancilla in equal superposition
         for q in ancilla_wires:
@@ -71,9 +73,11 @@ class QuarticQuantumAlgorithm(BaseAlgorithmStep):
                 qml.PauliX(wires=q)
             # Controlled swap 
             for j in range(n):
-                qml.ctrl(lambda: qml.SWAP(wires=[(i * n) + j, (m * n) + j]), control=ancilla_qubits)()
+                qml.ctrl(lambda: qml.SWAP(wires=[(i * n) + j, (m * n) + j]), control=ancilla_wires)()
             # Multi-controlled X on success qubit
-            qml.MultiControlledX(control_wires=ancilla_wires, wires=success_wire)
+            # qml.MultiControlledX(control_wires = ancilla_wires, wires=success_wire) #type: ignore
+            qml.ctrl(lambda: qml.PauliX(wires=success_wire), control=ancilla_wires)()
+
             # Undo flips
             for q in flip_qubits:
                 qml.PauliX(wires=q)
@@ -134,14 +138,14 @@ class QuarticQuantumAlgorithm(BaseAlgorithmStep):
 
         @qml.qnode(phi_qnode)
         def phi_circuit():
-            prepare_phi(wires, clauses, n)
+            QuarticQuantumAlgorithm.prepare_phi(wires, clauses, n)
             return qml.state()
 
         phi_state = phi_circuit()
 
         # Extract target register and repeat
         target_wires = list(range(m * n, (m + 1) * n))
-        guiding_state = extract_and_repeat_qubits(phi_state, t, target_wires, copies)
+        guiding_state = QuarticQuantumAlgorithm.extract_and_repeat_qubits(phi_state, t, target_wires, copies)
 
         return guiding_state
 
@@ -157,7 +161,7 @@ class QuarticQuantumAlgorithm(BaseAlgorithmStep):
         grover_iterations: number of amplitude amplification steps
     """
     @staticmethod
-    def phase_estimation_with_amplitude_amplification(guiding_state, H, t, steps, r, n, grover_iterations, threshold):
+    def phase_estimation_with_amplitude_amplification(guiding_state, H, t, steps, r, n: int, grover_iterations, threshold):
         total_qubits = r + n
         phase_wires = list(range(r))
         target_wires = list(range(r, total_qubits))
@@ -167,7 +171,8 @@ class QuarticQuantumAlgorithm(BaseAlgorithmStep):
         @qml.qnode(dev)
         def circuit():
             # Prepare guiding state
-            qml.QubitStateVector(target_initial_state, wires=target_wires)
+            qml.templates.MottonenStatePreparation(guiding_state, wires=target_wires)
+            # TODO: Cheat this, just copy the state over in qml.
 
             ### Phase Estimation
             # Apply Hadamard on phase register
@@ -180,7 +185,7 @@ class QuarticQuantumAlgorithm(BaseAlgorithmStep):
                     control=q
                 )()
             # Inverse QFT on phase register
-            qml.templates.InverseQFT(wires=phase_wires)
+            qml.adjoint(qml.templates.QFT)(wires=phase_wires)
 
             ### Amplitude Amplification
             # Grover iterations (includes QPE)
@@ -188,9 +193,9 @@ class QuarticQuantumAlgorithm(BaseAlgorithmStep):
                 # Oracle marks "good" states (phase > threshold)
                 # Note: threshold changes because we converted hermitian to unitary
                 new_threshold = int(np.floor(threshold * t / (2 * np.pi) * 2**r))
-                phase_threshold_oracle(phase_wires, new_threshold)
+                QuarticQuantumAlgorithm.phase_threshold_oracle(phase_wires, new_threshold)
                 # Reflection about guiding state
-                reflection_around_guiding_state(guiding_state, target_wires)
+                QuarticQuantumAlgorithm.reflection_around_guiding_state(guiding_state, target_wires)
 
             return qml.state()
         
@@ -201,6 +206,7 @@ class QuarticQuantumAlgorithm(BaseAlgorithmStep):
         phase_wires: phase register wires
         threshold:   threshold
     """
+    @staticmethod
     def phase_threshold_oracle(phase_wires, threshold_index):
         r = len(phase_wires)
         # Loop over states > threshold
@@ -209,8 +215,8 @@ class QuarticQuantumAlgorithm(BaseAlgorithmStep):
             for wire, bit in zip(phase_wires, bin_str):
                 if bit == '0':
                     qml.PauliX(wires=wire)
-            # Multi-controlled Z implemented via MultiControlledX on last qubit
-            qml.MultiControlledX(control_wires=phase_wires[:-1], wires=phase_wires[-1])
+            # Multi-controlled Z implemented via controlled PauliX on last qubit
+            qml.ctrl(lambda: qml.PauliX(wires=phase_wires[:-1]), control=phase_wires[-1])()
             for wire, bit in zip(phase_wires, bin_str):
                 if bit == '0':
                     qml.PauliX(wires=wire)
@@ -228,7 +234,7 @@ class QuarticQuantumAlgorithm(BaseAlgorithmStep):
         R = 2 * (phi @ np.conj(phi.T)) - I
         qml.QubitUnitary(R, wires=wires)
 
-    def _run(self, problem: ProblemRecord, context: StepContext):
+    def _run(self, problem: ProblemRecord, context: StepContext, stats: StepStats) -> Optional[dict]:
         # n, k
         n = problem.instance.n
         k = problem.instance.k
@@ -250,13 +256,13 @@ class QuarticQuantumAlgorithm(BaseAlgorithmStep):
         steps = 1                           # Trotter steps
         r = int(np.ceil(np.log2(n * len(clauses))))        # number of phase qubits
         grover_iterations = int(np.log2(n)) # simple default
-        circuit = phase_estimation_with_amplitude_amplification(
+        circuit = QuarticQuantumAlgorithm.phase_estimation_with_amplitude_amplification(
             guiding_state,
             kikuchi_matrix,
             t,
             steps,
             r,
-            n * ell / k,
+            int(n * ell / k),
             grover_iterations,
             threshold
         )
