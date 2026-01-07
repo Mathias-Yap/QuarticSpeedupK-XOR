@@ -250,20 +250,46 @@ def phase_estimation(unitary_circuit, n_phase_qubits, n_target_qubits, target_in
 
     return qpe_circuit
 
+    def grover_search(num_iterations, guiding_state, phase_estimation, phase_qubits, threshold):
+        circuit = QuantumCircuit()
+        # Prepare guiding state
+        circuit.append(guiding_state)
+
+        for _ in range(num_iterations):
+            # 1. Phase estimation
+            circuit.append(phase_estimation)
+
+            # 2. Mark states above threshold
+            circuit.append(
+                threshold_oracle(
+                    n_phase_qubits=n_phase_qubits,
+                    threshold=threshold,
+                )
+            )
+
+            # 3. Uncompute phase estimation
+            circuit.append(phase_estimation.inverse())
+
+            # 4. Reflect about |ψ⟩
+            circuit.append(reflect_about_guiding_state(guiding_state))
+
+        return circuit
+
+
     def _run(self, problem: ProblemRecord, context: StepContext):
         n = problem.instance.n
         k = problem.instance.k
         scopes = problem.instance.scopes
         b = problem.instance.b
-        clauses = [(list(scopes[scopes != -1]), int(val)) for scopes, val in zip(scopes, b)]
+        clauses = [(scope, int(val)) for scope, val in zip(scopes, b)]
         ell = problem.fields["ell"]
         kikuchi_matrix = problem.fields["kikuchi_matrix"]
         threshold = problem.fields["threshold"]
         guiding_state = prepare_guiding_state(clauses, n, ell, k)
         hamiltonian = hamiltonian_simulation(kikuchi_matrix)
         n_phase_qubits = 20
-        circuit = phase_estimation(hamiltonian, n_phase_qubits, n * ell / k, guiding_state)
-        # TODO Amplitude Amplification
+        pe = phase_estimation(hamiltonian, n_phase_qubits, n * ell / k, guiding_state)
+        circuit = grover_search(int(np.log2(n)), guiding_state, pe, n_phase_qubits, threshold)
         return {
             "quartic_quantum_circuit": circuit
         }
