@@ -7,6 +7,7 @@ reason about provenance.
 
 from __future__ import annotations
 
+import json
 import logging
 import random
 import time
@@ -114,6 +115,43 @@ class ProblemRecord:
     def add_metadata(self, stats: StepStats) -> None:
         """Add step stats metadata to the problem record."""
         self.step_history.append(stats)
+    
+    def save(self, path: str) -> None:
+        """Save the problem record to a file. Instance is saved as a separate KXORInstance file,
+        and fields/metadata are saved in a companion JSON file that contains the instance path.
+        """
+        self.instance.save(path)
+        companion_path = path + ".json"
+        with open(companion_path, "w") as f:
+            json.dump({
+                "instance_path": path,
+                "fields": self.fields,
+                "step_history": [stat.as_dict() for stat in self.step_history]
+            }, f)
+    
+    def load(path: str) -> ProblemRecord:
+        """Load a problem record from a file."""
+        companion_path = path + ".json"
+        with open(companion_path, "r") as f:
+            data = json.load(f)
+        instance = KXORInstance.load(data["instance_path"])
+        problem = ProblemRecord(
+            problem_id="loaded_problem",
+            instance=instance,
+            fields=data.get("fields", {}),
+            step_history=[
+                StepStats(
+                    step_name=stat["step"],
+                    version=stat["version"],
+                    problem_id=stat["problem_id"],
+                    started_at=stat["started_at"],
+                    completed_at=stat["completed_at"],
+                    failed=stat["failed"],
+                    additional_data=stat.get("additional_data", {})
+                ) for stat in data.get("step_history", [])
+            ]
+        )
+        return problem
 
 
 
