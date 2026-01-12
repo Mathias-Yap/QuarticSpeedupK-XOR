@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import functools
 import itertools
+import logging
+import time
 from math import comb
 from typing import Callable, Iterable, Sequence
 
@@ -29,6 +31,9 @@ __all__ = [
     "stage1_system_vector_from_quartic_step",
     "stage1_v_top_from_quartic_step",
 ]
+
+
+_LOGGER = logging.getLogger(__name__)
 
 
 def _qpe_aa_template(
@@ -83,6 +88,8 @@ class Circuit:
         stage1_backend: str | None = None,
         guiding_state: np.ndarray | None = None,
         guiding_state_policy: str | None = None,
+        *,
+        logger: logging.Logger | None = None,
     ):
         r"""Create a toy QPE(+AA) circuit instance.
 
@@ -101,6 +108,10 @@ class Circuit:
         self.t = t  # number of phase qubits used in first register
         self.y = y  # number of system qubits in second register
         self.tau = tau  # evolution time parameter for unitary U = exp(-i H tau)
+
+        # Logging is optional; we don't set up handlers here.
+        # If you want output, configure logging in your entrypoint / notebook.
+        self.logger = logger or _LOGGER
 
         # Stage-1 backend selection; used when recover_index_small(...) doesn't get an override.
         self.stage1_backend = str(stage1_backend) if stage1_backend is not None else str(Circuit.DEFAULT_STAGE1_BACKEND)
@@ -140,6 +151,14 @@ class Circuit:
         if guiding_state is not None:
             self.set_guiding_state(guiding_state, policy=self.guiding_state_policy)
 
+        self.logger.debug(
+            "Initialized Circuit(t=%d, y=%d, wires_total=%d, stage1_backend=%s)",
+            self.t,
+            self.y,
+            len(self.dev.wires),
+            self.stage1_backend,
+        )
+
     def set_guiding_state(self, guiding_state: np.ndarray | None, *, policy: str | None = None):
         """Set (or clear) the system-register guiding state.
 
@@ -147,6 +166,7 @@ class Circuit:
         """
         if guiding_state is None:
             self.guiding_state = None
+            self.logger.debug("Cleared guiding state")
             return
 
         policy = str(policy) if policy is not None else str(self.guiding_state_policy)
@@ -163,10 +183,20 @@ class Circuit:
             if nrm == 0:
                 raise ValueError("Guiding state has zero norm.")
             self.guiding_state = guiding_state / nrm
+            self.logger.debug(
+                "Set guiding state (policy=strict, dim=%d, norm=%.6g)",
+                target_dim,
+                float(nrm),
+            )
             return
 
         if policy == "pad":
             self.guiding_state = pad_and_normalize_state(guiding_state, target_dim)
+            self.logger.debug(
+                "Set guiding state (policy=pad, input_dim=%d -> target_dim=%d)",
+                int(guiding_state.size),
+                target_dim,
+            )
             return
 
         raise ValueError(f"Unknown guiding_state_policy={policy!r}. Expected 'pad' or 'strict'.")
@@ -224,6 +254,8 @@ class Circuit:
     def circuit(self):
         """QPE circuit that returns phase-register probabilities (eigenvalue info only)."""
 
+        self.logger.debug("Building QPE probs QNode")
+
         @qml.qnode(self.dev)
         def _circuit():
             """Run the QPE block and return phase probabilities."""
@@ -234,6 +266,8 @@ class Circuit:
 
     def circuit_state(self):
         """QPE circuit that returns the *full* statevector (toy sizes only)."""
+
+        self.logger.debug("Building QPE state QNode")
 
         @qml.qnode(self.dev)
         def _circuit_state():
@@ -397,7 +431,13 @@ class Circuit:
             for d in range(-int(neighborhood), int(neighborhood) + 1):
                 cand.add((base + d) % (2 ** self.t))
 
-        return sorted(cand)
+        out = sorted(cand)
+        self.logger.debug(
+            "Picked good phases around top eigenvalue (n=%d, neighborhood=%d)",
+            len(out),
+            int(neighborhood),
+        )
+        return out
 
     def reflect_zero(self) -> None:
         r"""
@@ -474,6 +514,7 @@ class Circuit:
             # subset_index is unused for dict inputs.
 
         V = np.zeros((n, n), dtype=complex)
+        t0 = time.perf_counter()
 
         vertices = set(range(n))
         for i in range(n):
@@ -497,6 +538,14 @@ class Circuit:
 
                 V[i, j] = 0.5 * total
                 V[j, i] = np.conj(V[i, j])
+
+        self.logger.info(
+            "Built voting matrix V (n=%d, ell=%d, dtype=%s) in %.3fs",
+            int(n),
+            int(ell),
+            str(V.dtype),
+            time.perf_counter() - t0,
+        )
 
         return V
 
@@ -563,6 +612,13 @@ class Circuit:
             if nrm > 0:
                 sys_vec = sys_vec / nrm
 
+        self.logger.debug(
+            "Extracted system vector (dim=%d, normalized=%s, ancillas_zero=%s)",
+            int(sys_vec.size),
+            bool(normalize),
+            bool(require_ancillas_zero),
+        )
+
         return sys_vec
 
     def amplitude_amplification(self, n_iters: int, return_state: bool = False, good_phases=None):
@@ -570,6 +626,18 @@ class Circuit:
 
         If return_state is True we return the full statevector (toy sizes only).
         """
+        try:
+            n_good = None if good_phases is None else len(good_phases)
+        except TypeError:
+            n_good = "?"
+
+        self.logger.debug(
+            "Building AA QNode (n_iters=%d, return_state=%s, good_phases=%s)",
+            int(n_iters),
+            bool(return_state),
+            n_good,
+        )
+
         @qml.qnode(self.dev)
         def amp_amp_circuit():
             """Run QPE, then n_iters Grover iterations, then measure."""
@@ -660,6 +728,14 @@ class Circuit:
         t2 = int(self.t if phase_qubits is None else phase_qubits)
         tau2 = float(self.tau if tau2 is None else tau2)
 
+        self.logger.debug(
+            "Building stage-2 circuit (dim=%d, y2=%d, t2=%d, use_aa=%s)",
+            int(dim),
+            int(y2),
+            int(t2),
+            bool(n_iters and n_iters > 0),
+        )
+
         c2 = Circuit(H=V, t=t2, y=y2, tau=tau2)
 
         # c2 already exposes the correctly bound QPE block as a plain callable.
@@ -727,6 +803,12 @@ class Circuit:
         v2 = self._normalize_global_phase(v2)
 
         x_hat2 = int(np.argmax(np.abs(v2)))
+        self.logger.info(
+            "Stage-2 recovered index x_hat2=%d (phase_qubits=%s, n_iters=%d)",
+            x_hat2,
+            str(phase_qubits if phase_qubits is not None else self.t),
+            int(n_iters),
+        )
         return x_hat2, v2, good_phases2, c2
 
     def recover_index_small(
@@ -769,6 +851,12 @@ class Circuit:
         else:
             raise ValueError(f"Unknown stage1_backend={stage1_backend!r}. Expected 'toy' or 'quartic_step'.")
 
+        self.logger.info(
+            "Stage-1 complete (backend=%s, sys_dim=%d)",
+            stage1_backend,
+            int(v_top_sys.size),
+        )
+
         # 3) Build voting matrix (must match the interpretation of v_top_sys)
         n = int(v_top_sys.size) if stage1_backend == "quartic_step" else int(2 ** self.y)
         V = self.form_voting_matrix(v_top_sys, n=n, ell=ell)
@@ -777,6 +865,8 @@ class Circuit:
         evals, evecs = np.linalg.eigh(V)
         top_vec = evecs[:, np.argmax(evals)]
         x_hat = int(np.argmax(np.abs(top_vec)))
+
+        self.logger.info("Recovered index x_hat=%d (ell=%d)", x_hat, int(ell))
 
         return x_hat, V, v_top_sys, evals, good_phases
 
