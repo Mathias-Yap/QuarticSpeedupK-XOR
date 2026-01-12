@@ -1,9 +1,10 @@
 import numpy as np
 import pennylane as qml
 
-from kxor_code.algorithms.Quartic_Schmidhuber_Quantum import Circuit
+from kxor_code.algorithms.Quartic_Schmidhuber_Quantum_KeyExtraction import Circuit
 from kxor_code.algorithms.quartic_step_adapter import guiding_state_from_quartic_step
 
+"""JUST FOR TESTING"""
 
 def main():
     """Small end-to-end demo for the toy circuit + stage-2.
