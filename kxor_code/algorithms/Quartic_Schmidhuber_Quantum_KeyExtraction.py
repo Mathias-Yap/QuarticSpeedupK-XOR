@@ -1,9 +1,3 @@
-"""Toy / research implementation for quartic-speedup K-XOR routines.
-
-This module intentionally stays lightweight and readable. It contains a small
-QPE(+AA) toy circuit, voting-matrix construction, and a stage-2 demo circuit.
-"""
-
 from __future__ import annotations
 
 import functools
