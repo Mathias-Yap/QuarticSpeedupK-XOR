@@ -6,7 +6,7 @@ reason about provenance.
 """
 
 from __future__ import annotations
-
+import os
 import json
 import logging
 import random
@@ -15,6 +15,8 @@ import uuid
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field, replace
 from typing import Any, Dict, Iterable, Iterator, List, MutableMapping, Optional, Sequence
+
+import numpy as np
 
 from kxor_code.problem_set_generation.kxor_instance import KXORInstance
 
@@ -119,16 +121,23 @@ class ProblemRecord:
     def save(self, path: str) -> None:
         """Save the problem record to a file. Instance is saved as a separate KXORInstance file,
         and fields/metadata are saved in a companion JSON file that contains the instance path.
+        The field kikuchi matrix is a sparse matrix and is saved separately in a .npz file. All files
+        will be saved in a folder specified by the path argument.
         """
-        self.instance.save(path)
-        companion_path = path + ".json"
+        folder_path = "/".join(path.split("/")[:-1])
+        os.makedirs(folder_path, exist_ok=True) 
+        self.instance.save(folder_path + "/kxor_instance.npz")
+        np.savez_compressed(folder_path + "/kikuchi_matrix.npz", self.fields["kikuchi_matrix"])
+        companion_path = folder_path + "/problem_records.json"
+        self.fields.pop("kikuchi_matrix", None)  # Remove the sparse matrix before saving fields
         with open(companion_path, "w") as f:
             json.dump({
                 "instance_path": path,
                 "fields": self.fields,
                 "step_history": [stat.as_dict() for stat in self.step_history]
             }, f)
-    
+
+    @staticmethod
     def load(path: str) -> ProblemRecord:
         """Load a problem record from a file."""
         companion_path = path + ".json"
