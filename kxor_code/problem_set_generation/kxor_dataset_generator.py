@@ -34,7 +34,8 @@ class KXORDatasetGenerator:
 
         # noise grid (ρ values)
         num_steps = int(1.0 / rho_step)
-        rho_values = [round(i * rho_step, 10) for i in range(num_steps + 1)]  # include 1.0
+        rho_values = [round(i * rho_step, 10) for i in range(1, num_steps + 1)]  # from 0.2 to 1.0
+
         
         # loop over all parameter combinations
         for n in range(n_min, n_max + 1):
@@ -47,17 +48,19 @@ class KXORDatasetGenerator:
 
                 gen = PlantedNoisyKXORGenerator(n=n, k=k, rng=rng)
 
-                # random instance
-                random_instance = gen.sample_random(m=m)
-                random_instance.save(f"{folder_path}/kxor_instance_id{instance_id}_n{n}_k{k}_m{m}_rho{0}.npz")
-                instance_id += 1
-                
-                # planted instances for each ρ
-                for rho in rho_values:
-                    planted_instance = gen.sample_planted(m=m, rho=rho)
-                    planted_instance.save(f"{folder_path}/kxor_instance_id{instance_id}_n{n}_k{k}_m{m}_rho{rho}.npz")
+                # Generate 3 random instances
+                for r in range(3):
+                    random_instance = gen.sample_random(m=m)
+                    random_instance.save(f"{folder_path}/kxor_instance_id{instance_id}_n{n}_k{k}_m{m}_rho0_random{r}.npz")
                     instance_id += 1
-
+                
+                # Generate 3 planted instances for each ρ
+                for rho in rho_values:
+                    for p in range(3):
+                        planted_instance = gen.sample_planted(m=m, rho=rho)
+                        planted_instance.save(f"{folder_path}/kxor_instance_id{instance_id}_n{n}_k{k}_m{m}_rho{rho}_planted{p}.npz")
+                        instance_id += 1
+                        
         if zip:
             shutil.make_archive(folder_path, 'zip', folder_path)
     
