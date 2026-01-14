@@ -9,7 +9,7 @@ from typing import Callable, Iterable, Sequence
 
 import numpy as np
 import pennylane as qml
-from scipy.linalg import expm
+ 
 
 from kxor_code.algorithms.quartic_step_adapter import (
     pad_and_normalize_state,
@@ -19,6 +19,7 @@ from kxor_code.algorithms.quartic_step_adapter import (
     stage1_system_vector_from_quartic_step,
     stage1_v_top_from_quartic_step,
 )
+from kxor_code.algorithms.voting_matrix import form_voting_matrix_common_remainder
 
 
 __all__ = [
@@ -34,6 +35,23 @@ __all__ = [
 
 
 _LOGGER = logging.getLogger(__name__)
+
+
+def _unitary_from_hermitian(H: np.ndarray, tau: float) -> np.ndarray:
+    """Compute U = exp(-i H tau) for Hermitian H via eigendecomposition.
+
+    This avoids a hard SciPy dependency while remaining numerically stable for the
+    Hermitian matrices used throughout this module.
+    """
+    H = np.asarray(H, dtype=complex)
+    if H.ndim != 2 or H.shape[0] != H.shape[1]:
+        raise ValueError("H must be a square matrix")
+    if not np.allclose(H, H.conj().T, atol=1e-8):
+        raise ValueError("H must be Hermitian (within numerical tolerance)")
+
+    evals, evecs = np.linalg.eigh(H)
+    phases = np.exp(-1j * evals * float(tau))
+    return (evecs * phases) @ evecs.conj().T
 
 
 def _qpe_aa_template(
@@ -108,6 +126,8 @@ class Circuit:
         self.t = t  # number of phase qubits used in first register
         self.y = y  # number of system qubits in second register
         self.tau = tau  # evolution time parameter for unitary U = exp(-i H tau)
+
+        self.U = _unitary_from_hermitian(H, tau)  # exp(-i H tau)
 
         # Logging is optional; we don't set up handlers here.
         # If you want output, configure logging in your entrypoint / notebook.
@@ -497,57 +517,14 @@ class Circuit:
         V : np.ndarray
             Voting matrix of shape (n, n). In general it is complex Hermitian.
         """
-        if isinstance(v_top, np.ndarray):
-            expected_len = comb(n, ell)
-            if v_top.size != expected_len:
-                raise ValueError(
-                    f"v_top numpy array length {v_top.size} does not match comb({n},{ell})={expected_len}."
-                )
-            if subset_index is None:
-                if subset_list is None:
-                    subset_list = list(itertools.combinations(range(n), ell))
-                subset_index = {subset: idx for idx, subset in enumerate(subset_list)}
-        else:
-            # v_top is dict mapping subset tuples to values
-            if subset_list is None:
-                subset_list = list(v_top.keys())
-            # subset_index is unused for dict inputs.
-
-        V = np.zeros((n, n), dtype=complex)
-        t0 = time.perf_counter()
-
-        vertices = set(range(n))
-        for i in range(n):
-            for j in range(i + 1, n):
-                total = 0.0 + 0.0j
-                for R in itertools.combinations(vertices - {i, j}, ell - 1):
-                    S_i = tuple(sorted(R + (i,)))
-                    S_j = tuple(sorted(R + (j,)))
-
-                    if isinstance(v_top, np.ndarray):
-                        try:
-                            val_i = v_top[subset_index[S_i]]  # type: ignore[index]
-                            val_j = v_top[subset_index[S_j]]  # type: ignore[index]
-                        except KeyError:
-                            continue
-                        total += val_i.conjugate() * val_j
-                    else:
-                        val_i = v_top.get(S_i, 0.0)
-                        val_j = v_top.get(S_j, 0.0)
-                        total += np.conj(val_i) * val_j
-
-                V[i, j] = 0.5 * total
-                V[j, i] = np.conj(V[i, j])
-
-        self.logger.info(
-            "Built voting matrix V (n=%d, ell=%d, dtype=%s) in %.3fs",
-            int(n),
-            int(ell),
-            str(V.dtype),
-            time.perf_counter() - t0,
+        return form_voting_matrix_common_remainder(
+            v_top,
+            n=int(n),
+            ell=int(ell),
+            subset_list=subset_list,
+            subset_index=subset_index,
+            logger=self.logger,
         )
-
-        return V
 
     def _reshape_state(self, state: np.ndarray) -> np.ndarray:
         """Reshape a flat statevector into a tensor with one axis per wire (wire order = 0..N-1)."""

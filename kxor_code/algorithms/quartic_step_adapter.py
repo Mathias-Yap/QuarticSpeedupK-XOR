@@ -71,6 +71,22 @@ def as_pauli_hamiltonian(H):
     """Convert a dense matrix H into a Pauli Hamiltonian for ApproxTimeEvolution."""
     import importlib
 
+    # Optional: support SciPy sparse matrices (e.g. output of ComputeKikuchiStep) by densifying.
+    # For large instances this will be too big; callers should pass a Pauli/Hamiltonian object
+    # directly in that case.
+    try:
+        import scipy.sparse as _sp  # type: ignore
+
+        if _sp.issparse(H):
+            if int(H.shape[0]) > 512:
+                raise ValueError(
+                    "Sparse H is too large to densify for pauli_decompose. "
+                    "Provide H as a PennyLane Hamiltonian/Pauli representation instead."
+                )
+            H = H.toarray()
+    except ModuleNotFoundError:
+        pass
+
     qml = importlib.import_module("pennylane")
 
     if getattr(H, "pauli_rep", None) is not None:

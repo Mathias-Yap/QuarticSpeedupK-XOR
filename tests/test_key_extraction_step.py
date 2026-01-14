@@ -1,6 +1,8 @@
 import numpy as np
+import pytest
 
 from kxor_code.algorithms.base_alg_step import ProblemRecord
+from kxor_code.algorithms.compute_kikuchi_step import ComputeKikuchiStep
 from kxor_code.algorithms.key_extraction_step import KeyExtractionStep
 from kxor_code.problem_set_generation.kxor_instance import KXORInstance
 
@@ -58,6 +60,97 @@ def test_key_extraction_step_synthetic_state():
     assert 0 <= x_hat < 3
 
 
+def test_key_extraction_stage2_classical_eigsh_backend():
+    pytest.importorskip("scipy")
+    # Same setup as the synthetic-state test, but force stage-2 to use eigsh.
+    instance = KXORInstance(
+        n=3,
+        k=2,
+        m=1,
+        scopes=np.array([[0, 1]]),
+        b=np.array([1]),
+        is_planted=False,
+        rho=None,
+        z=None,
+    )
+
+    problem = ProblemRecord(problem_id="p", instance=instance)
+    problem.add_field("ell", 1)
+    problem.add_field("threshold", 0.5)
+
+    r = 2
+    system_qubits = 2
+    tensor = np.zeros((1 << r, 1 << system_qubits), dtype=complex)
+    good_phases = [1, 2, 3]
+    scale = 1 / np.sqrt(15)
+    for p in good_phases:
+        tensor[p, 0] = 1 * scale
+        tensor[p, 1] = 2 * scale
+    state = tensor.reshape(-1)
+
+    def quartic_quantum_circuit():
+        return state
+
+    problem.add_field("quartic_quantum_circuit", quartic_quantum_circuit)
+
+    step = KeyExtractionStep(stage2_backend="classical_eigsh", stage2_num_eigenvalues=2)
+    step.raise_on_error = True
+    stats = step.execute(problem)
+    assert stats.failed is False
+
+    V = problem.get_field("voting_matrix")
+    assert V.shape == (3, 3)
+    assert np.allclose(V, V.conj().T)
+    x_hat = int(problem.get_field("x_hat"))
+    assert 0 <= x_hat < 3
+
+
+def test_key_extraction_stage2_schmidhuber_circuit_backend_smoke():
+    pytest.importorskip("pennylane")
+
+    instance = KXORInstance(
+        n=3,
+        k=2,
+        m=1,
+        scopes=np.array([[0, 1]]),
+        b=np.array([1]),
+        is_planted=False,
+        rho=None,
+        z=None,
+    )
+
+    problem = ProblemRecord(problem_id="p", instance=instance)
+    problem.add_field("ell", 1)
+    problem.add_field("threshold", 0.5)
+
+    r = 2
+    system_qubits = 2
+    tensor = np.zeros((1 << r, 1 << system_qubits), dtype=complex)
+    good_phases = [1, 2, 3]
+    scale = 1 / np.sqrt(15)
+    for p in good_phases:
+        tensor[p, 0] = 1 * scale
+        tensor[p, 1] = 2 * scale
+    state = tensor.reshape(-1)
+
+    def quartic_quantum_circuit():
+        return state
+
+    problem.add_field("quartic_quantum_circuit", quartic_quantum_circuit)
+
+    step = KeyExtractionStep(
+        stage2_backend="schmidhuber_stage2_circuit",
+        stage2_circuit_phase_qubits=2,
+        stage2_circuit_iters=1,
+        stage2_circuit_neighborhood=1,
+    )
+    step.raise_on_error = True
+    stats = step.execute(problem)
+    assert stats.failed is False
+    x_hat = int(problem.get_field("x_hat"))
+    assert 0 <= x_hat < 3
+
+
 def test_key_extraction_metrics_advantage_and_hamming():
     instance = KXORInstance(
         n=4,
@@ -89,3 +182,39 @@ def test_key_extraction_metrics_advantage_and_hamming():
     z_best, flipped = KeyExtractionStep._best_global_sign_match(z_hat, z_true)
     assert flipped is True
     assert np.array_equal(z_best, z_true)
+
+
+def test_key_extraction_stage1_backend_quartic_step_adapter_smoke():
+    pytest.importorskip("pennylane")
+    pytest.importorskip("scipy")
+
+    instance = KXORInstance(
+        n=3,
+        k=2,
+        m=1,
+        scopes=np.array([[0, 1]]),
+        b=np.array([1]),
+        is_planted=False,
+        rho=None,
+        z=None,
+    )
+
+    problem = ProblemRecord(problem_id="p", instance=instance)
+    problem.add_field("ell", 1)
+    problem.add_field("threshold", 0.0)
+
+    # Provide kikuchi_matrix for the adapter backend.
+    ComputeKikuchiStep().execute(problem)
+
+    step = KeyExtractionStep(
+        stage1_backend="quartic_step_adapter",
+        stage2_backend="classical_eigsh",
+        stage2_num_eigenvalues=2,
+        random_seed=0,
+    )
+    step.raise_on_error = True
+    stats = step.execute(problem)
+    assert stats.failed is False
+
+    x_hat = int(problem.get_field("x_hat"))
+    assert 0 <= x_hat < 3
