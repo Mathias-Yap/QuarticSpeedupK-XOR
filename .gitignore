@@ -1,6 +1,7 @@
 **/__pycache__/
 /datatest.txt
 /data/**/*.npz
+.venv
 /kxor_code/algorithms/test_quartic_circuit.py
 /tests/manual/
 .idea

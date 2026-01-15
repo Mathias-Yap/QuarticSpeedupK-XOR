@@ -130,7 +130,7 @@ def check_alice_theorem(ell: int, n: int, k: int, kappa: float, eps: float, m: i
     # --- d = δ_{ell,n,k} * m (if given) ---
     d = delta_lnk * m if delta_lnk is not None else None
     
-    all_ok = basic and (delta_condition_ok) and (n_asymptotic_ok in (True, None))
+    all_ok = (len(basic) == 0) and delta_condition_ok and (n_asymptotic_ok in (True, None))
     
     failure = len(basic) > 0 or not delta_condition_ok or (n_asymptotic_ok is False) 
     return {
