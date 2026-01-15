@@ -48,7 +48,9 @@ def test_key_extraction_step_synthetic_state():
 
     problem.add_field("quartic_quantum_circuit", quartic_quantum_circuit)
 
-    step = KeyExtractionStep()
+    # Keep this test dependency-light by selecting the classical stage-2 backend explicitly.
+    pytest.importorskip("scipy")
+    step = KeyExtractionStep(stage2_backend="classical_eigsh", stage2_num_eigenvalues=2)
     step.execute(problem)
 
     assert problem.get_field("good_phases") == good_phases
@@ -58,6 +60,57 @@ def test_key_extraction_step_synthetic_state():
 
     x_hat = int(problem.get_field("x_hat"))
     assert 0 <= x_hat < 3
+
+    z_hat = np.asarray(problem.get_field("z_hat"), dtype=int).reshape(-1)
+    assert z_hat.shape == (3,)
+    assert set(np.unique(z_hat)).issubset({-1, 1})
+
+
+def test_key_extraction_default_uses_stage2_circuit_backend_smoke():
+    pytest.importorskip("pennylane")
+
+    instance = KXORInstance(
+        n=3,
+        k=2,
+        m=1,
+        scopes=np.array([[0, 1]]),
+        b=np.array([1]),
+        is_planted=False,
+        rho=None,
+        z=None,
+    )
+
+    problem = ProblemRecord(problem_id="p", instance=instance)
+    problem.add_field("ell", 1)
+    problem.add_field("threshold", 0.5)
+
+    r = 2
+    system_qubits = 2
+    tensor = np.zeros((1 << r, 1 << system_qubits), dtype=complex)
+    good_phases = [1, 2, 3]
+    scale = 1 / np.sqrt(15)
+    for p in good_phases:
+        tensor[p, 0] = 1 * scale
+        tensor[p, 1] = 2 * scale
+    state = tensor.reshape(-1)
+
+    def quartic_quantum_circuit():
+        return state
+
+    problem.add_field("quartic_quantum_circuit", quartic_quantum_circuit)
+
+    # Default KeyExtractionStep() should now use the stage-2 circuit backend.
+    step = KeyExtractionStep(stage2_circuit_phase_qubits=2, stage2_circuit_iters=1, stage2_circuit_neighborhood=1)
+    step.raise_on_error = True
+    stats = step.execute(problem)
+    assert stats.failed is False
+
+    evals = np.asarray(problem.get_field("voting_eigenvalues"))
+    assert evals.size == 0  # circuit backend doesn't compute eigenvalues
+
+    z_hat = np.asarray(problem.get_field("z_hat"), dtype=int).reshape(-1)
+    assert z_hat.shape == (3,)
+    assert set(np.unique(z_hat)).issubset({-1, 1})
 
 
 def test_key_extraction_stage2_classical_eigsh_backend():
@@ -103,6 +156,10 @@ def test_key_extraction_stage2_classical_eigsh_backend():
     assert np.allclose(V, V.conj().T)
     x_hat = int(problem.get_field("x_hat"))
     assert 0 <= x_hat < 3
+
+    z_hat = np.asarray(problem.get_field("z_hat"), dtype=int).reshape(-1)
+    assert z_hat.shape == (3,)
+    assert set(np.unique(z_hat)).issubset({-1, 1})
 
 
 def test_key_extraction_stage2_schmidhuber_circuit_backend_smoke():

@@ -15,7 +15,7 @@ from kxor_code.algorithms.voting_matrix import form_voting_matrix_common_remaind
 
 
 class KeyExtractionStep(BaseAlgorithmStep):
-    """Pipeline step that turns the quartic circuit output into an extracted index.
+    """Pipeline step that turns the quartic circuit output into a recovered key estimate.
 
     This step is intended to run *after* [kxor_code/algorithms/quartic_quantum_algorithm_step.py](kxor_code/algorithms/quartic_quantum_algorithm_step.py)
     and consumes its `quartic_quantum_circuit` output.
@@ -29,6 +29,7 @@ class KeyExtractionStep(BaseAlgorithmStep):
     requires_fields = ["ell", "threshold"]
     produces_fields = [
         "x_hat",
+        "z_hat",
         "v_top_sys",
         "good_phases",
         "voting_matrix",
@@ -40,7 +41,7 @@ class KeyExtractionStep(BaseAlgorithmStep):
         *args,
         stage1_backend: str = "pipeline_qnode",
         evolution_time: float = 1.0,
-        stage2_backend: str = "dense",
+        stage2_backend: str = "schmidhuber_stage2_circuit",
         stage2_num_eigenvalues: int = 5,
         stage2_circuit_iters: int = 1,
         stage2_circuit_neighborhood: int = 1,
@@ -169,6 +170,7 @@ class KeyExtractionStep(BaseAlgorithmStep):
             r,
         )
 
+        """Stage-1: obtain system vector from quartic circuit output."""
         if self.stage1_backend == "pipeline_qnode":
             quartic_qnode = problem.get_field("quartic_quantum_circuit")
             if quartic_qnode is None or not callable(quartic_qnode):
@@ -238,13 +240,14 @@ class KeyExtractionStep(BaseAlgorithmStep):
         m_subsets = math.comb(n, ell)
         v_top_subsets = v_top_sys[:m_subsets]
 
-        # Use the shared implementation (also used by the Schmidhuber Circuit demo code).
+        # Use the shared implementation.
         V = form_voting_matrix_common_remainder(v_top_subsets, n=n, ell=ell, logger=context.logger)
 
         n_v = int(V.shape[0])
         if n_v <= 2:
             raise ValueError(f"Stage-2 requires voting matrix dimension N>=3 (got N={n_v}).")
 
+        """Stage-2: extract index from voting matrix."""
         if self.stage2_backend == "classical_eigsh":
             # Stage-2 via ARPACK (eigsh) in the same style as ClassicalEigenvaluesStep.
             # We reuse ClassicalEigenvaluesStep without modifying it by feeding a shifted matrix:
@@ -258,7 +261,7 @@ class KeyExtractionStep(BaseAlgorithmStep):
                 from scipy.sparse import csr_matrix, identity
             except ModuleNotFoundError as exc:
                 raise ModuleNotFoundError(
-                    "stage2_backend='classical_eigsh' requires SciPy (scipy). Install it."
+                    "stage2_backend='classical_eigsh' requires package: SciPy (conda/pip install scipy)."
                 ) from exc
 
             from kxor_code.algorithms.classical_eigenvalues_step import ClassicalEigenvaluesStep
@@ -290,7 +293,7 @@ class KeyExtractionStep(BaseAlgorithmStep):
             stats.add_data("stage2_alpha_shift", alpha)
             stats.add_data("stage2_eigs_computed", int(evals.size))
         else:
-            # Stage-2 using the existing Schmidhuber "second circuit" implementation.
+            # Stage-2 using the existing Schmidhuber-extended "second circuit" implementation.
             # The circuit requires a power-of-two Hamiltonian dimension, so we embed the
             # shifted voting matrix (V + alpha I) into a larger zero-padded matrix.
             # The shift preserves eigenvectors; the zero padding preserves the top eigenspace.
@@ -341,17 +344,12 @@ class KeyExtractionStep(BaseAlgorithmStep):
             stats.add_data("stage2_circuit_phase_qubits", int(t2))
             stats.add_data("stage2_circuit_good_phases_count", int(len(good_phases2)))
 
-        if self.evaluate:
-            z_hat = self._round_vector_to_pm1(top_vec)
-            adv_hat = self._kxor_advantage(problem.instance, z_hat)
-            adv_hat_flipped = self._kxor_advantage(problem.instance, -z_hat)
-            if adv_hat_flipped > adv_hat:
-                z_hat = -z_hat
-                adv_hat = adv_hat_flipped
-                flipped_for_advantage = True
-            else:
-                flipped_for_advantage = False
+        # Key recovery: keep the key-recovery logic in the Schmidhuber module.
+        from kxor_code.algorithms.Quartic_Schmidhuber_Quantum_KeyExtraction import recover_key_from_top_vector
 
+        z_hat, adv_hat, flipped_for_advantage = recover_key_from_top_vector(problem.instance, top_vec)
+
+        if self.evaluate:
             stats.add_data("eval_advantage", adv_hat)
             stats.add_data("eval_flipped_for_advantage", flipped_for_advantage)
 
@@ -401,6 +399,7 @@ class KeyExtractionStep(BaseAlgorithmStep):
 
         return {
             "x_hat": x_hat,
+            "z_hat": z_hat,
             "v_top_sys": v_top_sys,
             "good_phases": good_phases,
             "voting_matrix": V,

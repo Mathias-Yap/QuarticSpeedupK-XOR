@@ -8,7 +8,11 @@ from math import comb
 from typing import Callable, Iterable, Sequence
 
 import numpy as np
-import pennylane as qml
+
+try:
+    import pennylane as qml  # type: ignore
+except ModuleNotFoundError:  # pragma: no cover
+    qml = None
  
 
 from kxor_code.algorithms.quartic_step_adapter import (
@@ -24,6 +28,7 @@ from kxor_code.algorithms.voting_matrix import form_voting_matrix_common_remaind
 
 __all__ = [
     "Circuit",
+    "recover_key_from_top_vector",
     # Re-export adapter helpers so older imports keep working.
     "pad_and_normalize_state",
     "build_guiding_state_from_quartic_step",
@@ -35,6 +40,64 @@ __all__ = [
 
 
 _LOGGER = logging.getLogger(__name__)
+
+
+def _round_vector_to_pm1(v: np.ndarray) -> np.ndarray:
+    """Round a real/complex vector to a {±1}^n assignment via sign(real(v))."""
+    v = np.asarray(v)
+    if v.ndim != 1:
+        v = v.reshape(-1)
+    signs = np.sign(np.real(v)).astype(int)
+    signs[signs == 0] = 1
+    return signs
+
+
+def _kxor_advantage(instance, x_pm1: np.ndarray) -> float:
+    """Compute advantage Adv(x) = avg_i b_i * prod_{j in S_i} x_j for x in {±1}^n."""
+    x_pm1 = np.asarray(x_pm1, dtype=int).reshape(-1)
+    n = int(instance.n)
+    if x_pm1.size != n:
+        raise ValueError(f"x_pm1 must have length n={n} (got {x_pm1.size})")
+
+    scopes = np.asarray(instance.scopes, dtype=int)
+    b = np.asarray(instance.b, dtype=int).reshape(-1)
+    if scopes.ndim != 2 or scopes.shape[0] != b.size:
+        raise ValueError("instance.scopes and instance.b shapes are inconsistent")
+    if b.size == 0:
+        return 0.0
+
+    x_S = np.prod(x_pm1[scopes], axis=1)
+    return float(np.mean(b * x_S))
+
+
+def recover_key_from_top_vector(instance, top_vec: np.ndarray) -> tuple[np.ndarray, float, bool]:
+    """Recover a planted-key estimate z_hat ∈ {±1}^n from a stage-2 vector.
+
+    The vector `top_vec` is interpreted as a proxy for the planted direction (top eigenspace).
+    We round to ±1 by sign(real(.)) and resolve global sign ambiguity by choosing the sign
+    that maximizes advantage on the instance clauses.
+
+    Returns
+    -------
+    z_hat : np.ndarray
+        Length-n vector with entries in {±1}.
+    adv : float
+        Advantage achieved by z_hat.
+    flipped : bool
+        Whether we flipped the global sign (-z_hat_raw) to maximize advantage.
+    """
+    z_hat_raw = _round_vector_to_pm1(top_vec)
+    n = int(instance.n)
+    if z_hat_raw.size != n:
+        raise ValueError(
+            f"Recovered vector has length {z_hat_raw.size}, but instance has n={n}. Cannot form z_hat."
+        )
+
+    adv = _kxor_advantage(instance, z_hat_raw)
+    adv_flipped = _kxor_advantage(instance, -z_hat_raw)
+    if adv_flipped > adv:
+        return -z_hat_raw, adv_flipped, True
+    return z_hat_raw, adv, False
 
 
 def _unitary_from_hermitian(H: np.ndarray, tau: float) -> np.ndarray:
@@ -122,6 +185,11 @@ class Circuit:
         tau : float
             Evolution time for $U = \exp(-i H \tau)$.
         """
+        if qml is None:  # pragma: no cover
+            raise ModuleNotFoundError(
+                "PennyLane (pennylane) is required to construct Circuit objects. Install it to use circuit backends."
+            )
+
         self.H = H
         self.t = t  # number of phase qubits used in first register
         self.y = y  # number of system qubits in second register
@@ -149,9 +217,6 @@ class Circuit:
 
         # device initialization with total wires = t + y + ancillas for threshold oracle
         self.dev = qml.device("default.qubit", wires=t + y + 1 + (t + 1))
-
-        # base unitary U = exp(-i H tau) for Hamiltonian simulation
-        self.U = expm(-1j * H * tau)  # matrix exponential of -i H tau
 
         # Pre-bind the QPE block as a plain callable so we don't need a wrapper method.
         # This also plays nicely with qml.adjoint(self._qpe)() later.
@@ -517,6 +582,8 @@ class Circuit:
         V : np.ndarray
             Voting matrix of shape (n, n). In general it is complex Hermitian.
         """
+        """Functionality outsourced"""
+        #TODO: Remove the unnecessary method, which now only calls the implementation in voting_matrix.py after the refactoring
         return form_voting_matrix_common_remainder(
             v_top,
             n=int(n),
@@ -741,6 +808,7 @@ class Circuit:
 
         return c2, qnode
 
+    #TODO: REMOVE - only exemplary
     def run_stage2_recover_index_small(
         self,
         V: np.ndarray,
@@ -788,6 +856,7 @@ class Circuit:
         )
         return x_hat2, v2, good_phases2, c2
 
+    #TODO: REMOVE - only exemplary
     def recover_index_small(
         self,
         n_iters=1,
