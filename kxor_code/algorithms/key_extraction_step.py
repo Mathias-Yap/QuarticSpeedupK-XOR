@@ -269,7 +269,12 @@ class KeyExtractionStep(BaseAlgorithmStep):
             r,
         )
 
-        """Stage-1: obtain system vector from quartic circuit output."""
+        # Stage-1: obtain the (post-selected) system vector v_top_sys.
+        #
+        # This vector is what the later voting-matrix construction consumes.
+        # Depending on backend, it is either extracted from a statevector that the
+        # pipeline already computed (pipeline_qnode), or computed here by calling
+        # the quartic adapter (quartic_step_adapter).
         if self.stage1_backend == "pipeline_qnode":
             quartic_qnode = problem.get_field("quartic_quantum_circuit")
             if quartic_qnode is None or not callable(quartic_qnode):
@@ -292,6 +297,9 @@ class KeyExtractionStep(BaseAlgorithmStep):
                 )
 
             system_qubits = total_qubits - r
+
+            # Convert the user-facing threshold (continuous) into a discrete phase-index cutoff.
+            # We then mark all indices above that cutoff as "good".
             thr_idx = self._threshold_index(threshold, evolution_time=self.evolution_time, phase_qubits=r)
             thr_idx = max(-1, min(thr_idx, (1 << r) - 1))
             good_phases = list(range(thr_idx + 1, 1 << r))
@@ -304,6 +312,8 @@ class KeyExtractionStep(BaseAlgorithmStep):
                 normalize=True,
             )
         else:
+            # Adapter backend: build the clauses list, run stage-1 (quartic step), and return the
+            # extracted system vector directly.
             kikuchi_matrix = problem.get_field("kikuchi_matrix")
             if kikuchi_matrix is None:
                 raise TypeError(
@@ -333,10 +343,16 @@ class KeyExtractionStep(BaseAlgorithmStep):
                 raise ValueError(f"Stage-1 adapter returned system dimension {sys_dim} that is not a power of 2.")
             system_qubits = int(round(sys_qubits_f))
             total_qubits = int(system_qubits + r)
+
+            # Keep the same threshold bookkeeping as the pipeline backend so that stats are
+            # comparable across backends.
             thr_idx = self._threshold_index(threshold, evolution_time=self.evolution_time, phase_qubits=r)
             thr_idx = max(-1, min(thr_idx, (1 << r) - 1))
 
         m_subsets = math.comb(n, ell)
+
+        # Voting matrix construction only uses the first C(n, ell) amplitudes, corresponding
+        # to the ell-subsets in the common-remainder encoding.
         v_top_subsets = v_top_sys[:m_subsets]
 
         # Use the shared implementation.
@@ -346,7 +362,10 @@ class KeyExtractionStep(BaseAlgorithmStep):
         if n_v <= 2:
             raise ValueError(f"Stage-2 requires voting matrix dimension N>=3 (got N={n_v}).")
 
-        """Stage-2: extract index from voting matrix."""
+        # Stage-2: extract a top-eigenvector direction (or a proxy for it) from the voting matrix.
+        #
+        # We keep x_hat = argmax(|top_vec|) for diagnostics and backwards compatibility.
+        # The actual key recovery is done below from top_vec.
         if self.stage2_backend == "classical_eigsh":
             # Stage-2 via ARPACK (eigsh) in the same style as ClassicalEigenvaluesStep.
             # We reuse ClassicalEigenvaluesStep without modifying it by feeding a shifted matrix:
@@ -367,6 +386,10 @@ class KeyExtractionStep(BaseAlgorithmStep):
 
             row_sum = float(np.max(np.sum(np.abs(V), axis=1)))
             alpha = row_sum + 1.0
+
+            # Shift by +alpha*I so all eigenvalues are positive and ARPACK's "largest magnitude"
+            # selection matches the top-eigenvalue direction we care about. The shift does not
+            # change eigenvectors.
 
             V_sparse = csr_matrix(V)
             V_shift = V_sparse + (alpha * identity(n_v, dtype=complex, format="csr"))
@@ -409,6 +432,8 @@ class KeyExtractionStep(BaseAlgorithmStep):
             alpha = row_sum + 1.0
             V_shift_dense = V + (alpha * np.eye(n_v, dtype=complex))
 
+            # Circuit code requires a power-of-two dimension. Embed V into the top-left block of a
+            # 2**y2 matrix by zero-padding.
             y2 = int(np.ceil(np.log2(max(1, n_v))))
             dim = 1 << y2
             V_pad = np.zeros((dim, dim), dtype=complex)
@@ -433,6 +458,8 @@ class KeyExtractionStep(BaseAlgorithmStep):
             v2_full = _c2.extract_system_vector_from_state(state2, good_phases=good_phases2)
             v2_full = Circuit._normalize_global_phase(v2_full)
 
+            # Drop the padded part; only the original n_v entries correspond to the original
+            # voting matrix.
             top_vec = np.asarray(v2_full, dtype=complex).reshape(-1)[:n_v]
             x_hat = int(np.argmax(np.abs(top_vec)))
 
@@ -449,6 +476,12 @@ class KeyExtractionStep(BaseAlgorithmStep):
         z_hat, adv_hat, flipped_for_advantage = recover_key_from_top_vector(problem.instance, top_vec)
 
         if self.evaluate:
+            # Evaluation focuses on the recovered key z_hat.
+            #
+            # - Always compute advantage of z_hat (this does not require ground truth).
+            # - If ground-truth z exists, compute sign-corrected Hamming/correlation.
+            #   (There is a global sign ambiguity: z and -z are equivalent for the planted structure.
+            #    For reporting we pick the sign that matches z best.)
             stats.add_data("eval_advantage", adv_hat)
             stats.add_data("eval_flipped_for_advantage", flipped_for_advantage)
 
@@ -476,6 +509,7 @@ class KeyExtractionStep(BaseAlgorithmStep):
                 context.logger.info("Eval: adv=%.4f (no ground-truth z available)", adv_hat)
 
             if self.random_baseline_trials > 0:
+                # Optional sanity check: compare recovered advantage against random ±1 keys.
                 rng = np.random.default_rng(self.random_seed)
                 advs = []
                 for _ in range(self.random_baseline_trials):
