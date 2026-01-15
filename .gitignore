@@ -2,6 +2,4 @@
 /datatest.txt
 /data/**/*.npz
 /kxor_code/algorithms/test_quartic_circuit.py
-/kxor_code/algorithms/voting_matrix.py
-/kxor_code/algorithms/test_quartic_circuit.py
-/kxor_code/algorithms/voting_matrix.py
+.idea
