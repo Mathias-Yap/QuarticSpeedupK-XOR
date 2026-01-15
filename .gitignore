@@ -2,4 +2,5 @@
 /datatest.txt
 /data/**/*.npz
 /kxor_code/algorithms/test_quartic_circuit.py
+/tests/manual/
 .idea

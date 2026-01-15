@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import itertools
 import math
 from typing import Any, Dict, Optional
 
@@ -15,14 +14,126 @@ from kxor_code.algorithms.voting_matrix import form_voting_matrix_common_remaind
 
 
 class KeyExtractionStep(BaseAlgorithmStep):
-    """Pipeline step that turns the quartic circuit output into a recovered key estimate.
-
-    This step is intended to run *after* [kxor_code/algorithms/quartic_quantum_algorithm_step.py](kxor_code/algorithms/quartic_quantum_algorithm_step.py)
-    and consumes its `quartic_quantum_circuit` output.
-
-    Produced fields are deliberately simple (mostly numpy arrays / ints) so downstream
-    steps can reuse them.
     """
+        ---USAGE INSTRUCTIONS---
+    
+        Key extraction / key recovery pipeline step.
+
+        This step is the project’s "distinguish → recover" extension: it produces a *key estimate*
+        $z\_\text{hat} \in \{\pm 1\}^n$ from the stage-2 output vector.
+
+        It is designed to be used inside the pipeline framework (via `execute(...)`), but the
+        core work happens in `_run(problem, context, stats)`.
+
+        ------------------------------------------------------------------------------
+        Manual (How to run / configure)
+        ------------------------------------------------------------------------------
+
+        **Inputs expected in `problem`**
+        - Always required fields:
+            - `ell` (int): Kikuchi/voting subset size.
+            - `threshold` (float): phase-estimation threshold used to define "good phases".
+        - Required pipeline instance data:
+            - `problem.instance.n`, `problem.instance.m`, `problem.instance.k`,
+                `problem.instance.scopes`, `problem.instance.b`.
+
+        **Stage-1 backends (how `v_top_sys` is produced)**
+        - `stage1_backend='pipeline_qnode'` (default)
+            - Requires `problem.fields['quartic_quantum_circuit']` (callable returning a full
+                statevector as produced by `QuarticQuantumAlgorithmStep`).
+            - This is the standard pipeline mode when you already ran the quartic step.
+            - No PennyLane import is required here (the QNode can still be PennyLane under the hood).
+
+        - `stage1_backend='quartic_step_adapter'`
+            - Runs stage-1 via `stage1_system_vector_from_quartic_step(...)` from
+                `kxor_code.algorithms.quartic_step_adapter`.
+            - Requires `problem.fields['kikuchi_matrix']` (typically produced by `ComputeKikuchiStep`).
+            - Dependency notes:
+                - Requires PennyLane at runtime.
+                - If `kikuchi_matrix` is SciPy sparse, the adapter densifies *small* instances.
+
+        Aliases accepted via class variables (see `STAGE1_BACKEND_ALIASES`).
+
+        **Stage-2 backends (how we get `top_vec` from the voting matrix)**
+        - `stage2_backend='schmidhuber_stage2_circuit'` (default)
+            - Uses the "second circuit" implementation in
+                `kxor_code.algorithms.Quartic_Schmidhuber_Quantum_KeyExtraction.Circuit`.
+            - Requires PennyLane.
+            - This backend does not compute eigenvalues explicitly; `voting_eigenvalues` is empty.
+            - Parameters:
+                - `stage2_circuit_phase_qubits` (int|None): defaults to stage-1 phase qubits.
+                - `stage2_circuit_iters` (int): amplitude amplification iterations in stage-2.
+                - `stage2_circuit_neighborhood` (int): how wide a neighborhood of good phases to mark.
+
+        - `stage2_backend='classical_eigsh'`
+            - Computes a few top eigenpairs using ARPACK via `ClassicalEigenvaluesStep`.
+            - Requires SciPy.
+            - Parameter: `stage2_num_eigenvalues` (int): number of eigenpairs requested
+                (internally capped to satisfy ARPACK constraint `k < N-1`).
+            - Note: internally we shift the matrix by `alpha I` so "largest magnitude" matches
+                "largest eigenvalue"; eigenvectors are unchanged by shifting.
+
+        Aliases accepted via class variables (see `STAGE2_BACKEND_ALIASES`).
+
+        **Key recovery output (what we recover)**
+        - Stage-2 produces a vector `top_vec`.
+        - We map it to a key estimate via
+            `recover_key_from_top_vector(instance, top_vec)` in
+            `kxor_code.algorithms.Quartic_Schmidhuber_Quantum_KeyExtraction`:
+            - Round to ±1 via `sign(real(top_vec))`.
+            - Resolve the global sign ambiguity by picking the sign that maximizes *advantage*.
+        - `x_hat = argmax(|top_vec|)` is still produced for compatibility/diagnostics.
+
+        **Evaluation metrics (optional)**
+        - Enable with `evaluate=True`.
+        - Always computed when enabled:
+            - `eval_advantage`: advantage of the recovered key `z_hat`.
+        - Only computed if `problem.instance.z` exists and has length n:
+            - `eval_hamming`, `eval_hamming_frac`, `eval_correlation`.
+        - Optional random baseline: set `random_baseline_trials > 0`.
+
+        **Produced fields**
+        - `z_hat` (np.ndarray shape (n,), entries in {±1})  <-- main recovery artifact
+        - `x_hat` (int)                                    <-- diagnostic/legacy
+        - `v_top_sys` (np.ndarray)
+        - `good_phases` (list[int])
+        - `voting_matrix` (np.ndarray)
+        - `voting_eigenvalues` (np.ndarray; empty for circuit backend)
+
+        **Example configurations**
+        - Default (stage-2 circuit):
+            `KeyExtractionStep()`
+        - Force classical stage-2 eigensolver:
+            `KeyExtractionStep(stage2_backend='classical_eigsh', stage2_num_eigenvalues=5)`
+        - Run stage-1 via adapter + stage-2 via circuit:
+            `KeyExtractionStep(stage1_backend='quartic_step_adapter')`
+    """
+
+    # --- class-level configuration knobs (so settings are discoverable in one place) ---
+    DEFAULT_STAGE1_BACKEND = "pipeline_qnode"
+    DEFAULT_STAGE2_BACKEND = "schmidhuber_stage2_circuit"
+
+    STAGE1_BACKEND_ALIASES = {
+        "pipeline": "pipeline_qnode",
+        "pipeline_circuit": "pipeline_qnode",
+        "quartic_quantum_circuit": "pipeline_qnode",
+        "adapter": "quartic_step_adapter",
+        "quartic_step": "quartic_step_adapter",
+        "quartic_step_adapter": "quartic_step_adapter",
+        "schmidhuber_stage1": "quartic_step_adapter",
+    }
+    VALID_STAGE1_BACKENDS = {"pipeline_qnode", "quartic_step_adapter"}
+
+    STAGE2_BACKEND_ALIASES = {
+        # Historical aliases
+        "dense": "classical_eigsh",
+        "schmidhuber_stage2_quantum": "schmidhuber_stage2_circuit",
+    }
+    VALID_STAGE2_BACKENDS = {"classical_eigsh", "schmidhuber_stage2_circuit"}
+
+    DEFAULT_STAGE2_NUM_EIGENVALUES = 5
+    DEFAULT_STAGE2_CIRCUIT_ITERS = 1
+    DEFAULT_STAGE2_CIRCUIT_NEIGHBORHOOD = 1
 
     # Note: stage-1 can either consume a pre-built `quartic_quantum_circuit` (pipeline mode)
     # or build/run stage-1 itself via `stage1_system_vector_from_quartic_step` (adapter mode).
@@ -39,12 +150,12 @@ class KeyExtractionStep(BaseAlgorithmStep):
     def __init__(
         self,
         *args,
-        stage1_backend: str = "pipeline_qnode",
+        stage1_backend: str | None = None,
         evolution_time: float = 1.0,
-        stage2_backend: str = "schmidhuber_stage2_circuit",
-        stage2_num_eigenvalues: int = 5,
-        stage2_circuit_iters: int = 1,
-        stage2_circuit_neighborhood: int = 1,
+        stage2_backend: str | None = None,
+        stage2_num_eigenvalues: int | None = None,
+        stage2_circuit_iters: int | None = None,
+        stage2_circuit_neighborhood: int | None = None,
         stage2_circuit_phase_qubits: int | None = None,
         evaluate: bool = False,
         random_baseline_trials: int = 0,
@@ -52,26 +163,29 @@ class KeyExtractionStep(BaseAlgorithmStep):
         **kwargs,
     ) -> None:
         super().__init__(*args, **kwargs)
-        stage1_backend = str(stage1_backend)
-        if stage1_backend in {"pipeline", "pipeline_circuit", "quartic_quantum_circuit"}:
-            stage1_backend = "pipeline_qnode"
-        if stage1_backend in {"adapter", "quartic_step", "quartic_step_adapter", "schmidhuber_stage1"}:
-            stage1_backend = "quartic_step_adapter"
+
+        stage1_backend = self.DEFAULT_STAGE1_BACKEND if stage1_backend is None else str(stage1_backend)
+        stage1_backend = self.STAGE1_BACKEND_ALIASES.get(stage1_backend, stage1_backend)
         self.stage1_backend = stage1_backend
 
         self.evolution_time = float(evolution_time)
         # Historical note: we used to expose a separate "dense" stage-2 backend.
         # The eigsh-style path is the general one; keep "dense" as an alias for compatibility.
-        stage2_backend = str(stage2_backend)
-        if stage2_backend == "dense":
-            stage2_backend = "classical_eigsh"
-        # Backwards-compatible alias for the stage-2 circuit backend.
-        if stage2_backend == "schmidhuber_stage2_quantum":
-            stage2_backend = "schmidhuber_stage2_circuit"
+
+        stage2_backend = self.DEFAULT_STAGE2_BACKEND if stage2_backend is None else str(stage2_backend)
+        stage2_backend = self.STAGE2_BACKEND_ALIASES.get(stage2_backend, stage2_backend)
         self.stage2_backend = stage2_backend
-        self.stage2_num_eigenvalues = int(stage2_num_eigenvalues)
-        self.stage2_circuit_iters = int(stage2_circuit_iters)
-        self.stage2_circuit_neighborhood = int(stage2_circuit_neighborhood)
+        self.stage2_num_eigenvalues = int(
+            self.DEFAULT_STAGE2_NUM_EIGENVALUES if stage2_num_eigenvalues is None else stage2_num_eigenvalues
+        )
+        self.stage2_circuit_iters = int(
+            self.DEFAULT_STAGE2_CIRCUIT_ITERS if stage2_circuit_iters is None else stage2_circuit_iters
+        )
+        self.stage2_circuit_neighborhood = int(
+            self.DEFAULT_STAGE2_CIRCUIT_NEIGHBORHOOD
+            if stage2_circuit_neighborhood is None
+            else stage2_circuit_neighborhood
+        )
         self.stage2_circuit_phase_qubits = (
             None if stage2_circuit_phase_qubits is None else int(stage2_circuit_phase_qubits)
         )
@@ -79,25 +193,15 @@ class KeyExtractionStep(BaseAlgorithmStep):
         self.random_baseline_trials = int(random_baseline_trials)
         self.random_seed = int(random_seed)
 
-        if self.stage1_backend not in {"pipeline_qnode", "quartic_step_adapter"}:
+        if self.stage1_backend not in self.VALID_STAGE1_BACKENDS:
             raise ValueError(
                 f"Unknown stage1_backend={self.stage1_backend!r}. Expected 'pipeline_qnode' or 'quartic_step_adapter'."
             )
 
-        if self.stage2_backend not in {"classical_eigsh", "schmidhuber_stage2_circuit"}:
+        if self.stage2_backend not in self.VALID_STAGE2_BACKENDS:
             raise ValueError(
                 f"Unknown stage2_backend={self.stage2_backend!r}. Expected 'classical_eigsh' or 'schmidhuber_stage2_circuit'."
             )
-
-    @staticmethod
-    def _round_vector_to_pm1(v: np.ndarray) -> np.ndarray:
-        """Round a real/complex vector to a {±1}^n assignment via sign(real(v))."""
-        v = np.asarray(v)
-        if v.ndim != 1:
-            v = v.reshape(-1)
-        signs = np.sign(np.real(v)).astype(int)
-        signs[signs == 0] = 1
-        return signs
 
     @staticmethod
     def _kxor_advantage(instance: Any, x_pm1: np.ndarray) -> float:
@@ -147,11 +251,6 @@ class KeyExtractionStep(BaseAlgorithmStep):
         return int(
             np.floor(float(threshold) * float(evolution_time) / (2 * np.pi) * (1 << int(phase_qubits)))
         )
-
-    @staticmethod
-    def _form_voting_matrix_from_vector(v_top: np.ndarray, *, n: int, ell: int) -> np.ndarray:
-        """Backward-compatible wrapper around the shared voting-matrix implementation."""
-        return form_voting_matrix_common_remainder(v_top, n=int(n), ell=int(ell))
 
     def _run(self, problem: ProblemRecord, context: StepContext, stats: StepStats) -> Optional[Dict[str, Any]]:
         ell = int(problem.get_field("ell"))

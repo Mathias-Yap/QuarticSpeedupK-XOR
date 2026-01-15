@@ -23,7 +23,6 @@ from kxor_code.algorithms.quartic_step_adapter import (
     stage1_system_vector_from_quartic_step,
     stage1_v_top_from_quartic_step,
 )
-from kxor_code.algorithms.voting_matrix import form_voting_matrix_common_remainder
 
 
 __all__ = [
@@ -151,7 +150,7 @@ def _qpe_aa_template(
 
 
 class Circuit:
-    # Default stage-1 backend used by `recover_index_small` when the caller doesn't specify.
+    # Default stage-1 backend used by example/demo helpers when the caller doesn't specify.
     # - 'quartic_step': use quartic_quantum_algorithm_step for stage-1, then extract a system vector (i.e. import circuit).
     # - 'toy': use this module's dense-matrix QPE+AA for stage-1 (i.e. import only guiding state).
     DEFAULT_STAGE1_BACKEND = "quartic_step"
@@ -552,47 +551,6 @@ class Circuit:
         for w in wires:
             qml.PauliX(w)
 
-    def form_voting_matrix(
-        self,
-        v_top,
-        n: int,
-        ell: int,
-        subset_list: list[tuple[int, ...]] | None = None,
-        subset_index: dict[tuple[int, ...], int] | None = None,
-    ) -> np.ndarray:
-        r"""
-        Compute the n x n voting matrix V(v_top) using the efficient "common remainder R" formula:
-            For i < j:
-                V[i,j] = 0.5 * sum_{\{R \subset [n]\setminus \{i,j\}, |R|=ell-1\}} v_{R\cup\{i\}} * v_{R\cup\{j\}}
-            V[j,i] = V[i,j], diagonal entries are 0.
-
-        Inputs:
-            v_top : either
-                - numpy array of length C(n, ell) ordered according to subset_list (list of tuples from itertools.combinations(range(n), ell)),
-                - or dict mapping subset-tuples (sorted) to values.
-            n     : number of vertices
-            ell   : size of subsets for v_top
-            subset_list : optional list of subsets (tuples) of size ell, sorted, indexing v_top if v_top is array
-            subset_index : optional dict mapping subset tuple to index in v_top if v_top is array
-
-        Subset tuples are sorted and vertices are 0-based.
-
-        Returns
-        -------
-        V : np.ndarray
-            Voting matrix of shape (n, n). In general it is complex Hermitian.
-        """
-        """Functionality outsourced"""
-        #TODO: Remove the unnecessary method, which now only calls the implementation in voting_matrix.py after the refactoring
-        return form_voting_matrix_common_remainder(
-            v_top,
-            n=int(n),
-            ell=int(ell),
-            subset_list=subset_list,
-            subset_index=subset_index,
-            logger=self.logger,
-        )
-
     def _reshape_state(self, state: np.ndarray) -> np.ndarray:
         """Reshape a flat statevector into a tensor with one axis per wire (wire order = 0..N-1)."""
         n_wires = len(self.dev.wires)
@@ -808,116 +766,8 @@ class Circuit:
 
         return c2, qnode
 
-    #TODO: REMOVE - only exemplary
-    def run_stage2_recover_index_small(
-        self,
-        V: np.ndarray,
-        n_iters: int = 1,
-        neighborhood: int = 1,
-        tau2: float | None = None,
-        phase_qubits: int | None = None,
-    ):
-        """
-        Toy end-to-end stage-2 using an actual second quantum circuit:
-          1) build c2 for H=V
-          2) pick good phases for top eigenvalue region (small instances)
-          3) amplitude-amplify those phases
-          4) extract system vector for stage-2 and recover an index by argmax(|amplitude|)
-        """
-        c2, _ = self.stage2_circuit_from_voting_matrix(
-            V,
-            tau2=tau2,
-            phase_qubits=phase_qubits,
-            n_iters=0,  # we first determine good phases from c2's H/tau
-            return_state=False,
-        )
-
-        good_phases2 = c2.choose_good_phases_top_eigen(neighborhood=neighborhood)
-
-        c2, stage2_qnode = self.stage2_circuit_from_voting_matrix(
-            V,
-            tau2=tau2,
-            phase_qubits=phase_qubits,
-            good_phases=good_phases2,
-            n_iters=n_iters,
-            return_state=True,
-        )
-
-        state2 = stage2_qnode()
-        v2 = c2.extract_system_vector_from_state(state2, good_phases=good_phases2)
-        v2 = self._normalize_global_phase(v2)
-
-        x_hat2 = int(np.argmax(np.abs(v2)))
-        self.logger.info(
-            "Stage-2 recovered index x_hat2=%d (phase_qubits=%s, n_iters=%d)",
-            x_hat2,
-            str(phase_qubits if phase_qubits is not None else self.t),
-            int(n_iters),
-        )
-        return x_hat2, v2, good_phases2, c2
-
-    #TODO: REMOVE - only exemplary
-    def recover_index_small(
-        self,
-        n_iters=1,
-        ell=1,
-        *,
-        stage1_backend: str | None = None,
-        stage1_quartic_kwargs: dict | None = None,
-    ):
-        """Toy size end-to-end: build voting matrix and recover an index.
-
-        Parameters
-        ----------
-        stage1_backend : {'toy','quartic_step'}
-            - 'toy': use this module's dense-matrix QPE+AA and `extract_system_vector_from_state`.
-            - 'quartic_step': run stage-1 via quartic_quantum_algorithm_step and extract a system vector
-              from its returned state (no ancillas). Requires `stage1_quartic_kwargs`.
-        stage1_quartic_kwargs : dict
-            Passed to `stage1_system_vector_from_quartic_step(...)` when stage1_backend='quartic_step'.
-        """
-        if stage1_backend is None:
-            stage1_backend = str(self.stage1_backend)
-        stage1_backend = str(stage1_backend)
-
-        if stage1_backend == "quartic_step":
-            if not stage1_quartic_kwargs:
-                raise ValueError(
-                    "stage1_quartic_kwargs is required when stage1_backend='quartic_step'. "
-                    "Provide clauses/n/ell/k/threshold at minimum."
-                )
-            v_top_sys, good_phases, _qnode = stage1_v_top_from_quartic_step(H=self.H, **stage1_quartic_kwargs)
-        elif stage1_backend == "toy":
-            # 1) Stage-1: amplitude amplification + full state
-            good_phases = self.choose_good_phases_top_eigen(neighborhood=1)
-            aa_state_qnode = self.amplitude_amplification(n_iters=n_iters, return_state=True, good_phases=good_phases)
-            state = aa_state_qnode()
-            # 2) Extract a (postselected) system vector
-            v_top_sys = self.extract_system_vector_from_state(state, good_phases=good_phases)
-        else:
-            raise ValueError(f"Unknown stage1_backend={stage1_backend!r}. Expected 'toy' or 'quartic_step'.")
-
-        self.logger.info(
-            "Stage-1 complete (backend=%s, sys_dim=%d)",
-            stage1_backend,
-            int(v_top_sys.size),
-        )
-
-        # 3) Build voting matrix (must match the interpretation of v_top_sys)
-        n = int(v_top_sys.size) if stage1_backend == "quartic_step" else int(2 ** self.y)
-        V = self.form_voting_matrix(v_top_sys, n=n, ell=ell)
-
-        # 4) Stage-2 (classical for toy sizes): top eigenvector of V, then decode an index
-        evals, evecs = np.linalg.eigh(V)
-        top_vec = evecs[:, np.argmax(evals)]
-        x_hat = int(np.argmax(np.abs(top_vec)))
-
-        self.logger.info("Recovered index x_hat=%d (ell=%d)", x_hat, int(ell))
-
-        return x_hat, V, v_top_sys, evals, good_phases
-
 if __name__ == "__main__":
     raise SystemExit(
         "This module is intended to be imported. "
-        "Run the demo script instead: `python -m kxor_code.algorithms.quartic_schmidhuber_demo`"
+        "Run the demo script instead: `python tests/manual/quartic_schmidhuber_demo.py`"
     )
