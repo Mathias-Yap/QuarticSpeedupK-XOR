@@ -3,3 +3,7 @@
 /data/**/*.npz
 !/data/**/small_result_test_set/*.npz
 .venv
+.venv
+/kxor_code/algorithms/test_quartic_circuit.py
+/tests/manual/
+.idea

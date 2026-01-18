@@ -2,14 +2,23 @@ import os
 from typing import Sequence
 from kxor_code.algorithms.base_alg_step import NoOpStep, ProblemRecord, StepConfig, StepStats, StepContext, BaseAlgorithmStep
 from kxor_code.algorithms.classical_eigenvalues_step import ClassicalEigenvaluesStep
+"""Manual pipeline smoke script.
+
+This file is *not* a pytest test module.
+It lives at repo root for convenience, but we guard execution so `pytest` doesn't
+run it during collection.
+"""
+
+from kxor_code.algorithms.algorithm_pipeline import AlgorithmPipeline
 from kxor_code.algorithms.compute_kikuchi_step import ComputeKikuchiStep
-from kxor_code.algorithms.power_iteration_step import PowerIterationStep
 from kxor_code.algorithms.quartic_quantum_algorithm_step import QuarticQuantumAlgorithm
 from kxor_code.algorithms.threshold_step import ThresholdStep
-from kxor_code.problem_set_generation.kxor_instance import KXORInstance
-from kxor_code.algorithms.algorithm_pipeline import AlgorithmPipeline
+from kxor_code.algorithms.key_extraction_step import KeyExtractionStep
 from kxor_code.problem_set_generation.kxor_dataset_generator import KXORDatasetGenerator
 import pickle
+from kxor_code.problem_set_generation.kxor_instance import KXORInstance
+from kxor_code.algorithms.base_alg_step import ProblemRecord
+
 
 step = ComputeKikuchiStep()
 step2 = ThresholdStep()

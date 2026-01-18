@@ -1,5 +1,4 @@
 import numpy as np
-import pennylane as qml
 
 
 def pad_and_normalize_state(state: np.ndarray, target_dim: int) -> np.ndarray:
@@ -70,6 +69,26 @@ def extract_system_vector_from_state_no_ancillas(
 
 def as_pauli_hamiltonian(H):
     """Convert a dense matrix H into a Pauli Hamiltonian for ApproxTimeEvolution."""
+    import importlib
+
+    # Optional: support SciPy sparse matrices (e.g. output of ComputeKikuchiStep) by densifying.
+    # For large instances this will be too big; callers should pass a Pauli/Hamiltonian object
+    # directly in that case.
+    try:
+        import scipy.sparse as _sp  # type: ignore
+
+        if _sp.issparse(H):
+            if int(H.shape[0]) > 512:
+                raise ValueError(
+                    "Sparse H is too large to densify for pauli_decompose. "
+                    "Provide H as a PennyLane Hamiltonian/Pauli representation instead."
+                )
+            H = H.toarray()
+    except ModuleNotFoundError:
+        pass
+
+    qml = importlib.import_module("pennylane")
+
     if getattr(H, "pauli_rep", None) is not None:
         return H
 
@@ -95,6 +114,10 @@ def shift_hamiltonian_wires(H, *, offset: int):
     """
     if int(offset) == 0:
         return H
+
+    import importlib
+
+    qml = importlib.import_module("pennylane")
 
     try:
         wires = list(getattr(H, "wires", []))
