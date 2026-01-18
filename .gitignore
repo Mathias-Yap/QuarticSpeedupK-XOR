@@ -1,4 +1,5 @@
 **/__pycache__/
 /datatest.txt
 /data/**/*.npz
+!/data/**/small_result_test_set/*.npz
 .venv

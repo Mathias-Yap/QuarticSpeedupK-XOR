@@ -3,6 +3,7 @@ from typing import Any, Dict, Optional
 from scipy.sparse.linalg import eigsh
 
 class ClassicalEigenvaluesStep(BaseAlgorithmStep):
+    time_limit: Optional[float] = None  # in seconds
     requires_fields = ["kikuchi_matrix", "num_eigenvalues"]
     produces_fields = ["eigenvalues", "eigenvectors"]
 
@@ -15,6 +16,14 @@ class ClassicalEigenvaluesStep(BaseAlgorithmStep):
         Returns:
             tuple[np.ndarray, np.ndarray]: A tuple containing the eigenvalues and eigenvectors.
         """
+        if self.time_limit is not None:
+            import signal
+
+            def handler(signum, frame):
+                raise TimeoutError("Eigenvalue computation timed out.")
+
+            signal.signal(signal.SIGALRM, handler)
+            signal.alarm(int(self.time_limit))
         kikuchi_matrix = problem.get_field("kikuchi_matrix")
         num_eigenvalues = problem.get_field("num_eigenvalues")
         if not kikuchi_matrix.shape:
