@@ -6,7 +6,7 @@ reason about provenance.
 """
 
 from __future__ import annotations
-
+import os
 import json
 import logging
 import random
@@ -15,6 +15,9 @@ import uuid
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field, replace
 from typing import Any, Dict, Iterable, Iterator, List, MutableMapping, Optional, Sequence
+
+import numpy as np
+from scipy import sparse
 
 from kxor_code.problem_set_generation.kxor_instance import KXORInstance
 
@@ -119,16 +122,175 @@ class ProblemRecord:
     def save(self, path: str) -> None:
         """Save the problem record to a file. Instance is saved as a separate KXORInstance file,
         and fields/metadata are saved in a companion JSON file that contains the instance path.
+        The field kikuchi matrix is a sparse matrix and is saved separately in a .npz file. All files
+        will be saved in a folder specified by the path argument.
         """
-        self.instance.save(path)
-        companion_path = path + ".json"
+        folder_path = "/".join(path.split("/")[:-1])
+        os.makedirs(folder_path, exist_ok=True) 
+        self.instance.save(folder_path + "/kxor_instance.npz")
+        np.savez_compressed(folder_path + "/kikuchi_matrix.npz", self.fields["kikuchi_matrix"])
+        companion_path = folder_path + "/problem_records.json"
+        self.fields.pop("kikuchi_matrix", None)  # Remove the sparse matrix before saving fields
         with open(companion_path, "w") as f:
             json.dump({
                 "instance_path": path,
                 "fields": self.fields,
                 "step_history": [stat.as_dict() for stat in self.step_history]
             }, f)
-    
+
+    def save_compact(self, path: str, *, compress: bool = False) -> None:
+        """Save the problem record to a single .npz file for faster reloads."""
+        payload: Dict[str, Any] = {
+            "schema_version": np.array(1, dtype=np.int32),
+            "problem_id": np.array(self.problem_id),
+            "instance_n": np.array(self.instance.n, dtype=np.int64),
+            "instance_k": np.array(self.instance.k, dtype=np.int64),
+            "instance_m": np.array(self.instance.m, dtype=np.int64),
+            "instance_scopes": np.asarray(self.instance.scopes),
+            "instance_b": np.asarray(self.instance.b),
+            "instance_is_planted": np.array(self.instance.is_planted),
+            "instance_rho": np.array(-1.0 if self.instance.rho is None else self.instance.rho),
+            "instance_has_rho": np.array(self.instance.rho is not None),
+            "instance_z": np.asarray(self.instance.z) if self.instance.z is not None else np.array([]),
+            "instance_has_z": np.array(self.instance.z is not None),
+        }
+
+        array_fields: List[str] = []
+        sparse_fields: List[str] = []
+        json_fields: Dict[str, Any] = {}
+
+        for key, value in self.fields.items():
+            if sparse.issparse(value):
+                csr = value.tocsr()
+                sparse_fields.append(key)
+                payload[f"field_sparse__{key}__data"] = csr.data
+                payload[f"field_sparse__{key}__indices"] = csr.indices
+                payload[f"field_sparse__{key}__indptr"] = csr.indptr
+                payload[f"field_sparse__{key}__shape"] = np.array(csr.shape, dtype=np.int64)
+                payload[f"field_sparse__{key}__format"] = np.array(value.getformat())
+            elif isinstance(value, np.ndarray):
+                array_fields.append(key)
+                payload[f"field_array__{key}"] = value
+            else:
+                try:
+                    json.dumps(value, default=self._json_default)
+                except TypeError as exc:
+                    raise TypeError(
+                        f"Field '{key}' is not JSON-serializable; store numpy arrays directly "
+                        "or extend save_compact serialization."
+                    ) from exc
+                json_fields[key] = value
+
+        payload["fields_meta"] = np.array(
+            json.dumps({"array_fields": array_fields, "sparse_fields": sparse_fields})
+        )
+        payload["fields_json"] = np.array(json.dumps(json_fields, default=self._json_default))
+
+        try:
+            step_history_json = json.dumps(
+                [stat.as_dict() for stat in self.step_history],
+                default=self._json_default,
+            )
+        except TypeError as exc:
+            raise TypeError(
+                "Step history contains non-JSON-serializable values; consider normalizing "
+                "StepStats.additional_data before saving."
+            ) from exc
+        payload["step_history_json"] = np.array(step_history_json)
+
+        saver = np.savez_compressed if compress else np.savez
+        saver(path, **payload)
+
+    @staticmethod
+    def load_compact(path: str) -> ProblemRecord:
+        """Load a problem record saved via save_compact."""
+        data = np.load(path, allow_pickle=False)
+        schema_version = int(data["schema_version"]) if "schema_version" in data else 0
+        if schema_version != 1:
+            raise ValueError(f"Unsupported problem record schema version: {schema_version}")
+
+        has_rho = bool(data["instance_has_rho"])
+        rho = None if not has_rho else float(data["instance_rho"])
+        has_z = bool(data["instance_has_z"])
+        z = data["instance_z"]
+        if not has_z:
+            z = None
+
+        instance = KXORInstance.create(
+            scopes=data["instance_scopes"],
+            b=data["instance_b"],
+            is_planted=bool(data["instance_is_planted"]),
+            rho=rho,
+            z=z,
+        )
+
+        fields_meta_raw = ProblemRecord._coerce_str(data["fields_meta"].item())
+        fields_meta = json.loads(fields_meta_raw)
+        array_fields = fields_meta.get("array_fields", [])
+        sparse_fields = fields_meta.get("sparse_fields", [])
+
+        fields_json_raw = ProblemRecord._coerce_str(data["fields_json"].item())
+        fields: Dict[str, Any] = json.loads(fields_json_raw) if fields_json_raw else {}
+
+        for key in array_fields:
+            fields[key] = data[f"field_array__{key}"]
+
+        for key in sparse_fields:
+            data_arr = data[f"field_sparse__{key}__data"]
+            indices = data[f"field_sparse__{key}__indices"]
+            indptr = data[f"field_sparse__{key}__indptr"]
+            shape_raw = data[f"field_sparse__{key}__shape"]
+            shape = tuple(int(x) for x in shape_raw)
+            fmt = ProblemRecord._coerce_str(data[f"field_sparse__{key}__format"].item())
+            csr = sparse.csr_matrix((data_arr, indices, indptr), shape=shape)
+            fields[key] = ProblemRecord._convert_sparse_format(csr, fmt)
+
+        step_history_raw = ProblemRecord._coerce_str(data["step_history_json"].item())
+        step_history_data = json.loads(step_history_raw) if step_history_raw else []
+        step_history = [
+            StepStats(
+                step_name=stat["step"],
+                version=stat["version"],
+                problem_id=stat["problem_id"],
+                started_at=stat["started_at"],
+                completed_at=stat["completed_at"],
+                failed=stat["failed"],
+                additional_data=stat.get("additional_data", {}),
+            )
+            for stat in step_history_data
+        ]
+
+        problem_id = ProblemRecord._coerce_str(data["problem_id"].item())
+        return ProblemRecord(
+            problem_id=problem_id,
+            instance=instance,
+            fields=fields,
+            step_history=step_history,
+        )
+
+    @staticmethod
+    def _convert_sparse_format(matrix: sparse.csr_matrix, fmt: str) -> sparse.spmatrix:
+        if fmt == "dok":
+            return matrix.todok()
+        if fmt == "csc":
+            return matrix.tocsc()
+        if fmt == "coo":
+            return matrix.tocoo()
+        return matrix
+
+    @staticmethod
+    def _coerce_str(value: Any) -> str:
+        if isinstance(value, bytes):
+            return value.decode("utf-8")
+        return str(value)
+
+    @staticmethod
+    def _json_default(value: Any) -> Any:
+        if isinstance(value, np.generic):
+            return value.item()
+        raise TypeError(f"Object of type {type(value).__name__} is not JSON serializable")
+
+    @staticmethod
     def load(path: str) -> ProblemRecord:
         """Load a problem record from a file."""
         companion_path = path + ".json"
