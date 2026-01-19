@@ -29,7 +29,7 @@ step3.time_limit = 600  # Set time limit to 600 seconds
 pipeline = AlgorithmPipeline(steps=[step, step2, step3], verbose=True)
 generator = KXORDatasetGenerator()
 
-params_list = pickle.load(open("theorem_results.pkl", "rb"))
+params_list = pickle.load(open("z_Daphne/theorem_results.pkl", "rb"))
 for params in params_list:
     n = params["n"]
     k = params["k"]
