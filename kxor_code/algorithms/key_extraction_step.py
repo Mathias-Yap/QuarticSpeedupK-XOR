@@ -52,6 +52,12 @@ class KeyExtractionStep(BaseAlgorithmStep):
                 - Requires PennyLane at runtime.
                 - If `kikuchi_matrix` is SciPy sparse, the adapter densifies *small* instances.
 
+        - `stage1_backend='precomputed_eigenvector'`
+            - Uses a precomputed eigenvector stored on the record (typically from a prior
+              `ClassicalEigenvaluesStep` run):
+                - `problem.fields['eigenvectors']` and optionally `problem.fields['eigenvalues']`.
+            - Recommended for analyzing saved compact records that already contain eigenpairs.
+
         Aliases accepted via class variables (see `STAGE1_BACKEND_ALIASES`).
 
         **Stage-2 backends (how we get `top_vec` from the voting matrix)**
@@ -121,8 +127,12 @@ class KeyExtractionStep(BaseAlgorithmStep):
         "quartic_step": "quartic_step_adapter",
         "quartic_step_adapter": "quartic_step_adapter",
         "schmidhuber_stage1": "quartic_step_adapter",
+        "precomputed": "precomputed_eigenvector",
+        "precomputed_eigenvector": "precomputed_eigenvector",
+        "eigenvector": "precomputed_eigenvector",
+        "eigenvectors": "precomputed_eigenvector",
     }
-    VALID_STAGE1_BACKENDS = {"pipeline_qnode", "quartic_step_adapter"}
+    VALID_STAGE1_BACKENDS = {"pipeline_qnode", "quartic_step_adapter", "precomputed_eigenvector"}
 
     STAGE2_BACKEND_ALIASES = {
         # Historical aliases
@@ -311,6 +321,43 @@ class KeyExtractionStep(BaseAlgorithmStep):
                 good_phases=good_phases,
                 normalize=True,
             )
+        elif self.stage1_backend == "precomputed_eigenvector":
+            # For saved records that already contain eigenpairs, we can reuse the top eigenvector
+            # directly instead of re-running the quartic stage-1 circuit.
+            evecs = problem.get_field("eigenvectors")
+            if evecs is None:
+                raise TypeError(
+                    "stage1_backend='precomputed_eigenvector' requires problem.fields['eigenvectors']"
+                )
+            evecs = np.asarray(evecs)
+            if evecs.ndim != 2 or evecs.shape[0] == 0 or evecs.shape[1] == 0:
+                raise ValueError(
+                    f"problem.fields['eigenvectors'] must be a non-empty 2D array (got shape {evecs.shape})"
+                )
+
+            evals = problem.get_field("eigenvalues")
+            if evals is not None:
+                evals = np.asarray(evals, dtype=float).reshape(-1)
+                if evals.size != evecs.shape[1]:
+                    raise ValueError(
+                        "problem.fields['eigenvalues'] length must match eigenvectors column count "
+                        f"(got {evals.size} vs {evecs.shape[1]})"
+                    )
+                top_idx = int(np.argmax(evals))
+            else:
+                top_idx = int(evecs.shape[1] - 1)
+
+            v_top_sys = np.asarray(evecs[:, top_idx], dtype=complex).reshape(-1)
+
+            # For consistency in stats, still compute the threshold index and phase qubit count,
+            # even though we didn't actually run QPE here.
+            thr_idx = self._threshold_index(threshold, evolution_time=self.evolution_time, phase_qubits=r)
+            thr_idx = max(-1, min(thr_idx, (1 << r) - 1))
+            good_phases = []
+
+            sys_dim = int(v_top_sys.size)
+            system_qubits = int(np.ceil(np.log2(max(1, sys_dim))))
+            total_qubits = int(system_qubits + r)
         else:
             # Adapter backend: build the clauses list, run stage-1 (quartic step), and return the
             # extracted system vector directly.
@@ -398,9 +445,11 @@ class KeyExtractionStep(BaseAlgorithmStep):
             tmp_problem = ProblemRecord(problem_id=problem.problem_id, instance=problem.instance)
             tmp_problem.add_field("kikuchi_matrix", V_shift)
 
+            # ClassicalEigenvaluesStep reads `num_eigenvalues` from the ProblemRecord.
+            eigs_requested = int(min(max(1, self.stage2_num_eigenvalues), n_v - 2))
+            tmp_problem.add_field("num_eigenvalues", eigs_requested)
+
             classical_step = ClassicalEigenvaluesStep()
-            # ARPACK requires k < N-1. Also keep the request reasonable.
-            classical_step.num_eigenvalues = int(min(max(1, self.stage2_num_eigenvalues), n_v - 2))
             out = classical_step._run(tmp_problem, context, stats) or {}
 
             evals_shift = np.asarray(out["eigenvalues"], dtype=float).reshape(-1)
