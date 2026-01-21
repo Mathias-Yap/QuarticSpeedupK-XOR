@@ -335,6 +335,11 @@ class BaseAlgorithmStep(ABC):
             config = StepConfig(name=self.__class__.__name__)
         self.config = config
         self._logger = logger or logging.getLogger(self.config.name)
+
+        # Keep step logging self-contained by default (StreamHandler + any explicitly attached
+        # handlers). This avoids surprising duplication via root handlers in notebook contexts.
+        self._logger.propagate = False
+
         if not self._logger.handlers:
             handler = logging.StreamHandler()
             formatter = logging.Formatter(
